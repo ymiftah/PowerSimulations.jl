@@ -1005,6 +1005,59 @@ end
     end
 end
 
+# For every network formulation the balance expression, the CopperPlateBalanceConstraint and its
+# dual must share a component type and a row axis. A mismatch only surfaces at solve!.
+@testset "balance_aggregation is the single source of truth for the balance key" begin
+    for (network_formulation, extra_device_models) in (
+        (CopperPlatePowerModel, ()),
+        (PTDFPowerModel, ((Line, StaticBranch),)),
+        (AreaBalancePowerModel, ((AreaInterchange, StaticBranch),)),
+        (AreaPTDFPowerModel, ((AreaInterchange, StaticBranch), (Line, StaticBranch))),
+    )
+        c_sys = PSB.build_system(PSISystems, "two_area_pjm_DA")
+        transform_single_time_series!(c_sys, Hour(24), Hour(1))
+        template = get_thermal_dispatch_template_network(
+            NetworkModel(network_formulation; duals = [CopperPlateBalanceConstraint]),
+        )
+        for (component_type, formulation) in extra_device_models
+            set_device_model!(template, component_type, formulation)
+        end
+        ps_model =
+            DecisionModel(
+                template,
+                c_sys;
+                resolution = Hour(1),
+                optimizer = HiGHS_optimizer,
+            )
+        @test build!(ps_model; output_dir = mktempdir(; cleanup = true)) ==
+              PSI.ModelBuildStatus.BUILT
+
+        aggregation = PSI.balance_aggregation(network_formulation)
+        container = PSI.get_optimization_container(ps_model)
+        key = PSI.ConstraintKey(CopperPlateBalanceConstraint, aggregation)
+
+        expression = PSI.get_expression(container, ActivePowerBalance(), aggregation)
+        @test key in PSI.get_constraint_keys(container)
+        @test key in collect(keys(PSI.get_duals(container)))
+
+        constraint =
+            PSI.get_constraint(container, CopperPlateBalanceConstraint(), aggregation)
+        dual_container = PSI.get_duals(container)[key]
+        @test axes(constraint)[1] == axes(expression)[1]
+        @test axes(dual_container)[1] == axes(constraint)[1]
+
+        @test solve!(ps_model) == PSI.RunStatus.SUCCESSFULLY_FINALIZED
+        results = OptimizationProblemResults(ps_model)
+        duals = read_dual(
+            results,
+            CopperPlateBalanceConstraint,
+            aggregation;
+            table_format = TableFormat.WIDE,
+        )
+        @test size(duals, 1) == 24
+    end
+end
+
 @testset "2 Areas AreaBalance PowerModel with TimeSeries" begin
     c_sys = PSB.build_system(PSISystems, "two_area_pjm_DA")
     load = first(get_components(PowerLoad, c_sys))
