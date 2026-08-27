@@ -414,9 +414,9 @@ function _make_system_expressions!(
     container::OptimizationContainer,
     subnetworks::Dict{Int, Set{Int}},
     ::Vector{Int},
-    ::Type{<:PM.AbstractPowerModel},
+    ::Type{T},
     bus_reduction_map::Dict{Int64, Set{Int64}},
-)
+) where {T <: PM.AbstractPowerModel}
     time_steps = get_time_steps(container)
     if isempty(bus_reduction_map)
         ac_bus_numbers = collect(Iterators.flatten(values(subnetworks)))
@@ -424,7 +424,7 @@ function _make_system_expressions!(
         ac_bus_numbers = collect(keys(bus_reduction_map))
     end
     container.expressions = Dict(
-        ExpressionKey(ActivePowerBalance, PSY.ACBus) =>
+        ExpressionKey(ActivePowerBalance, balance_aggregation(T)) =>
             _make_container_array(ac_bus_numbers, time_steps),
         ExpressionKey(ReactivePowerBalance, PSY.ACBus) =>
             _make_container_array(ac_bus_numbers, time_steps),
@@ -436,9 +436,9 @@ function _make_system_expressions!(
     container::OptimizationContainer,
     subnetworks::Dict{Int, Set{Int}},
     ::Vector{Int},
-    ::Type{<:PM.AbstractActivePowerModel},
+    ::Type{T},
     bus_reduction_map::Dict{Int64, Set{Int64}},
-)
+) where {T <: PM.AbstractActivePowerModel}
     time_steps = get_time_steps(container)
     if isempty(bus_reduction_map)
         ac_bus_numbers = collect(Iterators.flatten(values(subnetworks)))
@@ -446,7 +446,7 @@ function _make_system_expressions!(
         ac_bus_numbers = collect(keys(bus_reduction_map))
     end
     container.expressions = Dict(
-        ExpressionKey(ActivePowerBalance, PSY.ACBus) =>
+        ExpressionKey(ActivePowerBalance, balance_aggregation(T)) =>
             _make_container_array(ac_bus_numbers, time_steps),
     )
     return
@@ -456,13 +456,13 @@ function _make_system_expressions!(
     container::OptimizationContainer,
     subnetworks::Dict{Int, Set{Int}},
     ::Vector{Int},
-    ::Type{CopperPlatePowerModel},
+    ::Type{T},
     bus_reduction_map::Dict{Int64, Set{Int64}},
-)
+) where {T <: CopperPlatePowerModel}
     time_steps = get_time_steps(container)
     subnetworks_ref_buses = collect(keys(subnetworks))
     container.expressions = Dict(
-        ExpressionKey(ActivePowerBalance, PSY.System) =>
+        ExpressionKey(ActivePowerBalance, balance_aggregation(T)) =>
             _make_container_array(subnetworks_ref_buses, time_steps),
     )
     return
@@ -483,7 +483,7 @@ function _make_system_expressions!(
     end
     subnetworks = collect(keys(subnetworks))
     container.expressions = Dict(
-        ExpressionKey(ActivePowerBalance, PSY.System) =>
+        ExpressionKey(ActivePowerBalance, balance_aggregation(T)) =>
             _make_container_array(subnetworks, time_steps),
         ExpressionKey(ActivePowerBalance, PSY.ACBus) =>
         # Bus numbers are sorted to guarantee consistency in the order between the
@@ -496,12 +496,12 @@ end
 function _make_system_expressions!(
     container::OptimizationContainer,
     subnetworks::Dict{Int, Set{Int}},
-    ::Type{AreaBalancePowerModel},
+    ::Type{T},
     areas::IS.FlattenIteratorWrapper{PSY.Area},
-)
+) where {T <: AreaBalancePowerModel}
     time_steps = get_time_steps(container)
     container.expressions = Dict(
-        ExpressionKey(ActivePowerBalance, PSY.Area) =>
+        ExpressionKey(ActivePowerBalance, balance_aggregation(T)) =>
             _make_container_array(PSY.get_name.(areas), time_steps),
     )
     return
@@ -511,10 +511,10 @@ function _make_system_expressions!(
     container::OptimizationContainer,
     subnetworks::Dict{Int, Set{Int}},
     ::Vector{Int},
-    ::Type{AreaPTDFPowerModel},
+    ::Type{T},
     areas::IS.FlattenIteratorWrapper{PSY.Area},
     bus_reduction_map::Dict{Int64, Set{Int64}},
-)
+) where {T <: AreaPTDFPowerModel}
     time_steps = get_time_steps(container)
     if isempty(bus_reduction_map)
         ac_bus_numbers = collect(Iterators.flatten(values(subnetworks)))
@@ -523,7 +523,7 @@ function _make_system_expressions!(
     end
     container.expressions = Dict(
         # Enforces the balance by Area
-        ExpressionKey(ActivePowerBalance, PSY.Area) =>
+        ExpressionKey(ActivePowerBalance, balance_aggregation(T)) =>
             _make_container_array(PSY.get_name.(areas), time_steps),
         # Keeps track of the Injections by bus.
         ExpressionKey(ActivePowerBalance, PSY.ACBus) =>

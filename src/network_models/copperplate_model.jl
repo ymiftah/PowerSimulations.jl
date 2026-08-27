@@ -1,42 +1,32 @@
+"""
+    add_constraints!(container, ::Type{CopperPlateBalanceConstraint}, sys, model::NetworkModel{T})
+
+Enforces the network's active power balance over whichever aggregate the formulation declares
+through [`balance_aggregation`](@ref): `PSY.System` for `CopperPlatePowerModel` and
+`PTDFPowerModel` (one row per synchronous subnetwork), `PSY.Area` for `AreaBalancePowerModel`
+and `AreaPTDFPowerModel` (one row per area).
+
+The constraint's component-type key and its row axis both come from the balance expression, so
+it is keyed identically to that expression and to the dual `assign_dual_variable!` registers.
+"""
 function add_constraints!(
     container::OptimizationContainer,
-    ::Type{T},
-    sys::U,
-    model::NetworkModel{V},
-) where {
-    T <: CopperPlateBalanceConstraint,
-    U <: PSY.System,
-    V <: Union{CopperPlatePowerModel, PTDFPowerModel},
-}
-    time_steps = get_time_steps(container)
-    expressions = get_expression(container, ActivePowerBalance(), U)
-    subnets = collect(keys(model.subnetworks))
-    constraint = add_constraints_container!(container, T(), U, subnets, time_steps)
-    for t in time_steps, k in keys(model.subnetworks)
-        constraint[k, t] =
-            JuMP.@constraint(get_jump_model(container), expressions[k, t] == 0)
-    end
-
-    return
-end
-
-function add_constraints!(
-    container::OptimizationContainer,
-    ::Type{T},
-    sys::U,
-    network_model::NetworkModel{V},
-) where {
-    T <: CopperPlateBalanceConstraint,
-    U <: PSY.System,
-    V <: AreaPTDFPowerModel,
-}
-    time_steps = get_time_steps(container)
-    expressions = get_expression(container, ActivePowerBalance(), PSY.Area)
-    area_names = PSY.get_name.(get_available_components(network_model, PSY.Area, sys))
-    constraint =
-        add_constraints_container!(container, T(), PSY.Area, area_names, time_steps)
+    ::Type{CopperPlateBalanceConstraint},
+    ::PSY.System,
+    ::NetworkModel{T},
+) where {T <: PM.AbstractPowerModel}
+    aggregation = balance_aggregation(T)
+    expressions = get_expression(container, ActivePowerBalance(), aggregation)
+    aggregate_names, time_steps = axes(expressions)
+    constraint = add_constraints_container!(
+        container,
+        CopperPlateBalanceConstraint(),
+        aggregation,
+        aggregate_names,
+        time_steps,
+    )
     jm = get_jump_model(container)
-    for t in time_steps, k in area_names
+    for t in time_steps, k in aggregate_names
         constraint[k, t] = JuMP.@constraint(jm, expressions[k, t] == 0)
     end
 
