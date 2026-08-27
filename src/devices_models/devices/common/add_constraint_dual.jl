@@ -39,6 +39,22 @@ function add_constraint_dual!(
     return
 end
 
+# `AreaBalancePowerModel` keys its `CopperPlateBalanceConstraint` by `PSY.Area`, so it assigns
+# duals from `sys` rather than through the generic `PM.AbstractPowerModel` method above, which
+# keys them by the `PSY.ACBus` components it resolves.
+function add_constraint_dual!(
+    container::OptimizationContainer,
+    sys::PSY.System,
+    model::NetworkModel{AreaBalancePowerModel},
+)
+    if !isempty(get_duals(model))
+        for constraint_type in get_duals(model)
+            assign_dual_variable!(container, constraint_type, sys, model)
+        end
+    end
+    return
+end
+
 function add_constraint_dual!(
     container::OptimizationContainer,
     sys::PSY.System,
@@ -161,5 +177,21 @@ function assign_dual_variable!(
     time_steps = get_time_steps(container)
     ref_buses = get_reference_buses(network_model)
     add_dual_container!(container, constraint_type, U, ref_buses, time_steps)
+    return
+end
+
+# Row axis comes from the stored constraint container so the dual matches it exactly; the two
+# area formulations derive their constraint axes by different routes. `construct_network!`
+# adds the constraint before the dual.
+function assign_dual_variable!(
+    container::OptimizationContainer,
+    constraint_type::Type{CopperPlateBalanceConstraint},
+    ::U,
+    ::NetworkModel{V},
+) where {U <: PSY.System, V <: Union{AreaBalancePowerModel, AreaPTDFPowerModel}}
+    time_steps = get_time_steps(container)
+    existing = get_constraint(container, constraint_type(), PSY.Area)
+    area_names = axes(existing)[1]
+    add_dual_container!(container, constraint_type, PSY.Area, area_names, time_steps)
     return
 end
