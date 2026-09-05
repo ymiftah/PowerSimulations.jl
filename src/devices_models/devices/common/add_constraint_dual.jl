@@ -172,26 +172,20 @@ function assign_dual_variable!(
     container::OptimizationContainer,
     constraint_type::Type{CopperPlateBalanceConstraint},
     ::U,
-    network_model::NetworkModel{<:PM.AbstractPowerModel},
-) where {U <: PSY.System}
-    time_steps = get_time_steps(container)
-    ref_buses = get_reference_buses(network_model)
-    add_dual_container!(container, constraint_type, U, ref_buses, time_steps)
-    return
-end
-
-# Row axis comes from the stored constraint container so the dual matches it exactly; the two
-# area formulations derive their constraint axes by different routes. `construct_network!`
-# adds the constraint before the dual.
-function assign_dual_variable!(
-    container::OptimizationContainer,
-    constraint_type::Type{CopperPlateBalanceConstraint},
-    ::U,
     ::NetworkModel{V},
-) where {U <: PSY.System, V <: Union{AreaBalancePowerModel, AreaPTDFPowerModel}}
+) where {U <: PSY.System, V <: PM.AbstractPowerModel}
     time_steps = get_time_steps(container)
-    existing = get_constraint(container, constraint_type(), PSY.Area)
-    area_names = axes(existing)[1]
-    add_dual_container!(container, constraint_type, PSY.Area, area_names, time_steps)
+    # Component type from the formulation's `balance_aggregation` trait, row axis from the
+    # stored constraint container, so the dual matches the constraint on both counts.
+    # `construct_network!` adds the constraint before the dual.
+    aggregation = balance_aggregation(V)
+    existing = get_constraint(container, constraint_type(), aggregation)
+    add_dual_container!(
+        container,
+        constraint_type,
+        aggregation,
+        axes(existing)[1],
+        time_steps,
+    )
     return
 end
