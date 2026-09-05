@@ -956,6 +956,55 @@ end
     )
 end
 
+# Both area-aggregated network models key CopperPlateBalanceConstraint by PSY.Area, so their
+# duals must be keyed by PSY.Area too. A mismatch only surfaces at solve!.
+@testset "2 Areas area-aggregated PowerModel duals" begin
+    for (network_formulation, wrong_key_type) in (
+        (AreaBalancePowerModel, PSY.ACBus),
+        (AreaPTDFPowerModel, PSY.System),
+    )
+        c_sys = PSB.build_system(PSISystems, "two_area_pjm_DA")
+        transform_single_time_series!(c_sys, Hour(24), Hour(1))
+        template = get_thermal_dispatch_template_network(
+            NetworkModel(network_formulation; duals = [CopperPlateBalanceConstraint]),
+        )
+        set_device_model!(template, AreaInterchange, StaticBranch)
+        set_device_model!(template, Line, StaticBranch)
+        ps_model =
+            DecisionModel(
+                template,
+                c_sys;
+                resolution = Hour(1),
+                optimizer = HiGHS_optimizer,
+            )
+
+        @test build!(ps_model; output_dir = mktempdir(; cleanup = true)) ==
+              PSI.ModelBuildStatus.BUILT
+
+        opt_container = PSI.get_optimization_container(ps_model)
+        dual_keys = collect(keys(PSI.get_duals(opt_container)))
+        @test PSI.ConstraintKey(CopperPlateBalanceConstraint, PSY.Area) in dual_keys
+        @test !(
+            PSI.ConstraintKey(CopperPlateBalanceConstraint, wrong_key_type) in dual_keys
+        )
+
+        @test solve!(ps_model) == PSI.RunStatus.SUCCESSFULLY_FINALIZED
+
+        results = OptimizationProblemResults(ps_model)
+        area_duals = read_dual(
+            results,
+            CopperPlateBalanceConstraint,
+            PSY.Area;
+            table_format = TableFormat.WIDE,
+        )
+        @test size(area_duals, 1) == 24
+        for area_name in ["Area1", "Area2"]
+            @test area_name in names(area_duals)
+            @test all(isfinite, area_duals[!, area_name])
+        end
+    end
+end
+
 @testset "2 Areas AreaBalance PowerModel with TimeSeries" begin
     c_sys = PSB.build_system(PSISystems, "two_area_pjm_DA")
     load = first(get_components(PowerLoad, c_sys))
