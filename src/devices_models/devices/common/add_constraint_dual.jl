@@ -58,6 +58,19 @@ end
 function add_constraint_dual!(
     container::OptimizationContainer,
     sys::PSY.System,
+    model::NetworkModel{AreaBalancePowerModel},
+)
+    if !isempty(get_duals(model))
+        for constraint_type in get_duals(model)
+            assign_dual_variable!(container, constraint_type, sys, model)
+        end
+    end
+    return
+end
+
+function add_constraint_dual!(
+    container::OptimizationContainer,
+    sys::PSY.System,
     model::ServiceModel{T, D},
 ) where {T <: PSY.Service, D <: AbstractServiceFormulation}
     if !isempty(get_duals(model))
@@ -180,9 +193,6 @@ function assign_dual_variable!(
     return
 end
 
-# Row axis comes from the stored constraint container so the dual matches it exactly; the two
-# area formulations derive their constraint axes by different routes. `construct_network!`
-# adds the constraint before the dual.
 function assign_dual_variable!(
     container::OptimizationContainer,
     constraint_type::Type{CopperPlateBalanceConstraint},
