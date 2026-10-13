@@ -215,6 +215,26 @@ function _add_contributing_device_by_type!(
     return
 end
 
+# One pass over the devices instead of `PSY.get_contributing_device_mapping`, which rescans every
+# device for every service. Transmission interfaces are contributed to by branches only.
+function _contributing_device_mapping(sys::PSY.System)
+    by_uuid = Dict{Base.UUID, Vector{PSY.Device}}()
+    for device in PSY.get_components(PSY.supports_services, PSY.Device, sys)
+        for service in PSY.get_services(device)
+            push!(get!(by_uuid, IS.get_uuid(service), PSY.Device[]), device)
+        end
+    end
+    mapping = PSY.ServiceContributingDevicesMapping()
+    for service in PSY.get_components(PSY.Service, sys)
+        devices = get(by_uuid, IS.get_uuid(service), PSY.Device[])
+        service isa PSY.TransmissionInterface &&
+            (devices = filter(d -> d isa PSY.Branch, devices))
+        key = PSY.ServiceContributingDevicesKey((typeof(service), PSY.get_name(service)))
+        mapping[key] = PSY.ServiceContributingDevices(service, devices)
+    end
+    return mapping
+end
+
 function _populate_contributing_devices!(template::ProblemTemplate, sys::PSY.System)
     service_models = get_service_models(template)
     isempty(service_models) && return
@@ -225,7 +245,7 @@ function _populate_contributing_devices!(template::ProblemTemplate, sys::PSY.Sys
     modeled_devices = Set{DataType}(get_component_type(m) for m in values(device_models))
     union!(modeled_devices, (get_component_type(m) for m in values(branch_models)))
     incompatible_device_types = get_incompatible_devices(device_models)
-    services_mapping = PSY.get_contributing_device_mapping(sys)
+    services_mapping = _contributing_device_mapping(sys)
     if isempty(keys(services_mapping))
         @warn "The system doesn't include any services. No services will be modeled, consider removing the service models from the template." _group =
             LOG_GROUP_SERVICE_CONSTUCTORS
