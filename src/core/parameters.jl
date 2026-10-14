@@ -2,11 +2,23 @@ abstract type ParameterAttributes end
 
 struct NoAttributes end
 
+# Coefficient of `variable` in `constraint`, set to `scale * value * multiplier` with `value` at
+# `(param_row, time_step)` of the parameter array and `multiplier` at `(multiplier_row, time_step)`.
+struct CoefficientTarget
+    constraint::JuMP.ConstraintRef
+    variable::JuMP.VariableRef
+    scale::Float64
+    param_row::Int
+    multiplier_row::Int
+    time_step::Int
+end
+
 struct TimeSeriesAttributes{T <: PSY.TimeSeriesData} <: ParameterAttributes
     name::String
     multiplier_id::Base.RefValue{Int}
     component_name_to_ts_uuid::Dict{String, String}
     subsystem::Base.RefValue{String}
+    coefficient_targets::Vector{CoefficientTarget}
 end
 
 function TimeSeriesAttributes(
@@ -20,8 +32,11 @@ function TimeSeriesAttributes(
         Base.RefValue{Int}(multiplier_id),
         component_name_to_ts_uuid,
         Base.RefValue{String}(""),
+        CoefficientTarget[],
     )
 end
+
+get_coefficient_targets(attr::TimeSeriesAttributes) = attr.coefficient_targets
 
 get_time_series_type(::TimeSeriesAttributes{T}) where {T <: PSY.TimeSeriesData} = T
 get_time_series_name(attr::TimeSeriesAttributes) = attr.name
@@ -509,6 +524,16 @@ struct MaxInterfaceFlowLimitParameter <: TimeSeriesParameter end
 Parameter to define Min Flow limit for interface time series
 """
 struct MinInterfaceFlowLimitParameter <: TimeSeriesParameter end
+
+"""
+Abstract type for time series parameters that set the coefficient of a variable in a
+constraint instead of a right-hand side.
+
+Values are stored as `Float64` in every build mode. Formulations register each coefficient
+with [`add_coefficient_target!`](@ref); simulation updates rewrite the registered coefficients
+with `JuMP.set_normalized_coefficient`.
+"""
+abstract type ConstraintCoefficientParameter <: TimeSeriesParameter end
 
 abstract type VariableValueParameter <: RightHandSideParameter end
 
