@@ -412,6 +412,10 @@ export UpperBoundValueParameter
 export LowerBoundValueParameter
 export FixValueParameter
 
+# Constraint Coefficient Parameters
+export ConstraintCoefficientParameter
+export add_coefficient_target!
+
 # Event Parameters
 export AvailableStatusParameter
 export AvailableStatusChangeCountdownParameter
@@ -686,6 +690,7 @@ include("operation/operation_model_simulation_interface.jl")
 include("parameters/update_container_parameter_values.jl")
 include("parameters/update_cost_parameters.jl")
 include("parameters/update_parameters.jl")
+include("parameters/coefficient_parameters.jl")
 
 include("devices_models/devices/common/objective_function/common.jl")
 include("devices_models/devices/common/objective_function/linear_curve.jl")

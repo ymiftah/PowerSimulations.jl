@@ -565,6 +565,13 @@ OnStatusParameter
 FixValueParameter
 ```
 
+### Constraint Coefficient Parameters
+
+```@docs
+ConstraintCoefficientParameter
+add_coefficient_target!
+```
+
 ### Objective Function Parameters
 
 ```@docs
