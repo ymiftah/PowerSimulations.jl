@@ -227,7 +227,8 @@ function _contributing_device_mapping(sys::PSY.System)
     mapping = PSY.ServiceContributingDevicesMapping()
     for service in PSY.get_components(PSY.Service, sys)
         devices = get(by_uuid, IS.get_uuid(service), PSY.Device[])
-        service isa PSY.TransmissionInterface && (devices = filter(d -> d isa PSY.Branch, devices))
+        service isa PSY.TransmissionInterface &&
+            (devices = filter(d -> d isa PSY.Branch, devices))
         key = PSY.ServiceContributingDevicesKey((typeof(service), PSY.get_name(service)))
         mapping[key] = PSY.ServiceContributingDevices(service, devices)
     end
