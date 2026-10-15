@@ -202,6 +202,47 @@ end
     _verify_read_results(path, sim, variables, model_defs, seed)
 end
 
+@testset "Test SimulationStore keys whose meta contains '/'" begin
+    sim = Dict(
+        "initial_time" => Dates.DateTime("2020-01-01T00:00:00"),
+        "step_resolution" => Dates.Hour(1),
+        "num_steps" => 2,
+    )
+    # '/' is an HDF5 group separator; "a%2Fb" must not collide with "a/b" once escaped.
+    variables = Dict(
+        PSI.VariableKey(ActivePowerVariable, ThermalStandard, "N>>X/1@2020-01-01#1") =>
+            Dict("keep_in_cache" => true),
+        PSI.VariableKey(ActivePowerVariable, ThermalStandard, "a/b") =>
+            Dict("keep_in_cache" => true),
+        PSI.VariableKey(ActivePowerVariable, ThermalStandard, "a%2Fb") =>
+            Dict("keep_in_cache" => true),
+    )
+    model_defs = OrderedDict(
+        :ED => Dict(
+            "execution_count" => 1,
+            "horizon" => Hour(2),
+            "names" => ([:dev1, :dev2],),
+            "variables" => Dict(x => ones(2, 2) for x in keys(variables)),
+            "interval" => Dates.Hour(1),
+            "resolution" => Dates.Hour(1),
+            "base_power" => 100.0,
+            "system_uuid" => Base.UUID("4076af6c-e467-56ae-b986-b466b2749572"),
+        ),
+    )
+    cache_rules = CacheFlushRules(; max_size = 1 * MiB, min_flush_size = 4 * KiB)
+    path = mktempdir()
+    seed = 1234
+    _run_sim_test(path, sim, variables, model_defs, cache_rules, seed)
+    _verify_read_results(path, sim, variables, model_defs, seed)
+    open_store(HdfSimulationStore, path, "r") do store
+        @test issetequal(keys(store.dm_data[:ED].variables), keys(variables))
+        @test haskey(
+            PSI.get_container_key_lookup(store),
+            "ActivePowerVariable__ThermalStandard__a/b",
+        )
+    end
+end
+
 @testset "Test OptimizationOutputCache" begin
     key = PSI.OptimizationResultCacheKey(
         :ED,

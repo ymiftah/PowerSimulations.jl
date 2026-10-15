@@ -273,7 +273,7 @@ function initialize_problem_storage!(
             group = _get_group_or_create(problem_group, string(type))
             for (key, reqs) in getfield(dm_problem_reqs[problem], type)
                 !should_write_resulting_value(key) && continue
-                name = encode_key_as_string(key)
+                name = _make_dataset_name(key)
                 dataset = _create_dataset(group, name, reqs)
                 # Columns can't be stored in attributes because they might be larger than
                 # the max size of 64 KiB.
@@ -324,7 +324,7 @@ function initialize_problem_storage!(
         for type in STORE_CONTAINERS
             group = _get_group_or_create(emulation_group, string(type))
             for (key, reqs) in getfield(em_problem_reqs, type)
-                name = encode_key_as_string(key)
+                name = _make_dataset_name(key)
                 dataset = _create_dataset(group, name, reqs)
                 # Columns can't be stored in attributes because they might be larger than
                 # the max size of 64 KiB.
@@ -860,7 +860,9 @@ function _create_dataset(group, name, reqs)
 end
 
 function _deserialize_attributes!(store::HdfSimulationStore)
-    container_key_lookup = get_container_key_lookup(store)
+    container_key_lookup = Dict(
+        _escape_dataset_name(k) => v for (k, v) in get_container_key_lookup(store)
+    )
     group = store.file["simulation"]
     initial_time = Dates.DateTime(HDF5.read(HDF5.attributes(group)["initial_time"]))
     step_resolution =
@@ -1084,6 +1086,12 @@ function _get_group_or_create(parent, group_name)
 end
 
 _make_column_name(name) = string(name) * "__columns"
+
+# HDF5 reads '/' in a link name as a group separator, so a key whose meta contains '/' is
+# escaped ('%' first, to keep the mapping injective).
+_escape_dataset_name(name::AbstractString) = replace(name, "%" => "%25", "/" => "%2F")
+_make_dataset_name(key::OptimizationContainerKey) =
+    _escape_dataset_name(encode_key_as_string(key))
 
 function _get_indices(store::HdfSimulationStore, model_name::Symbol, timestamp)
     time_diff = Dates.Millisecond(timestamp - store.params.initial_time)
