@@ -60,6 +60,16 @@ function ObjectiveFunction()
     )
 end
 
+# Memo for `is_milp`. `zero_one_count` is the ZeroOne constraint count the cached
+# `is_milp` answer was computed for; -1 means not yet computed.
+mutable struct MILPState
+    zero_one_count::Int
+    is_milp::Bool
+    dual_warning_emitted::Bool
+end
+
+MILPState() = MILPState(-1, false, false)
+
 mutable struct OptimizationContainer <: ISOPT.AbstractOptimizationContainer
     JuMPmodel::JuMP.Model
     time_steps::UnitRange{Int}
@@ -82,6 +92,7 @@ mutable struct OptimizationContainer <: ISOPT.AbstractOptimizationContainer
     metadata::ISOPT.OptimizationContainerMetadata
     default_time_series_type::Type{<:PSY.TimeSeriesData}
     power_flow_evaluation_data::Vector{PowerFlowEvaluationData}
+    milp_state::MILPState
 end
 
 function OptimizationContainer(
@@ -124,6 +135,7 @@ function OptimizationContainer(
         ISOPT.OptimizationContainerMetadata(),
         T,
         Vector{PowerFlowEvaluationData}[],
+        MILPState(),
     )
 end
 
@@ -242,18 +254,20 @@ function has_container_key(
     return haskey(container.initial_conditions, key)
 end
 
+# The result depends only on whether the model has any ZeroOne constraint. The count is
+# O(1) to query, and the memo is refreshed whenever it changes, so binaries added after an
+# earlier call (or unset and restored by `process_duals`) are picked up.
 function is_milp(container::OptimizationContainer)::Bool
     !supports_milp(container) && return false
-    if !isempty(
-        JuMP.all_constraints(
-            PSI.get_jump_model(container),
-            JuMP.VariableRef,
-            JuMP.MOI.ZeroOne,
-        ),
-    )
-        return true
+    jump_model = get_jump_model(container)
+    zero_one_count =
+        JuMP.num_constraints(jump_model, JuMP.VariableRef, JuMP.MOI.ZeroOne)
+    state = container.milp_state
+    if state.zero_one_count != zero_one_count
+        state.zero_one_count = zero_one_count
+        state.is_milp = zero_one_count > 0
     end
-    return false
+    return state.is_milp
 end
 
 function supports_milp(container::OptimizationContainer)
@@ -1154,7 +1168,9 @@ function add_dual_container!(
     sparse = false,
     meta = ISOPT.CONTAINER_KEY_EMPTY_META,
 ) where {T <: ConstraintType, U <: Union{PSY.Component, PSY.System}}
-    if is_milp(container)
+    state = container.milp_state
+    if !state.dual_warning_emitted && is_milp(container)
+        state.dual_warning_emitted = true
         @warn("The model has resulted in a MILP, \\
               dual value retrieval requires solving an additional Linear Program \\
               which increases simulation time and the results could be innacurate.")
