@@ -1230,6 +1230,22 @@ function read_duals(container::OptimizationContainer)
 end
 
 ##################################### Parameter Container ##################################
+function _time_series_parameter_eltype(
+    container::OptimizationContainer,
+    ::Type{<:TimeSeriesParameter},
+)
+    if built_for_recurrent_solves(container) && !get_rebuild_model(get_settings(container))
+        return JuMP.VariableRef
+    end
+    return Float64
+end
+
+# Coefficient parameters are applied with `JuMP.set_normalized_coefficient`, never as JuMP parameters.
+_time_series_parameter_eltype(
+    ::OptimizationContainer,
+    ::Type{<:ConstraintCoefficientParameter},
+) = Float64
+
 function _add_param_container!(
     container::OptimizationContainer,
     key::ParameterKey{T, U},
@@ -1282,11 +1298,7 @@ function _add_param_container!(
     time_steps::UnitRange{Int};
     sparse = false,
 ) where {T <: TimeSeriesParameter, U <: PSY.Component, V <: PSY.TimeSeriesData}
-    if built_for_recurrent_solves(container) && !get_rebuild_model(get_settings(container))
-        param_type = JuMP.VariableRef
-    else
-        param_type = Float64
-    end
+    param_type = _time_series_parameter_eltype(container, T)
     if sparse
         param_array =
             sparse_container_spec(param_type, param_axs, additional_axs..., time_steps)
