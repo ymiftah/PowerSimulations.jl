@@ -82,3 +82,21 @@ requires_all_branch_models(::Type{AreaBalancePowerModel}) = false
 branches_modeled(::Type{<:PM.AbstractPowerModel}) = true
 branches_modeled(::Type{CopperPlatePowerModel}) = false
 branches_modeled(::Type{AreaBalancePowerModel}) = false
+
+"""
+    balance_aggregation(::Type{<:PM.AbstractPowerModel})
+
+The component type the network's active power balance is aggregated over: the key under which
+`ActivePowerBalance` and `CopperPlateBalanceConstraint` are stored, and the one their duals use.
+
+A trait rather than a supertype because the aggregation cuts across the formulation hierarchy —
+`AreaBalancePowerModel` is an `AbstractActivePowerModel` and `AreaPTDFPowerModel` an
+`AbstractPTDFModel`, yet both aggregate by `PSY.Area`.
+
+A formulation aggregating by anything other than `PSY.ACBus` must declare it here.
+"""
+balance_aggregation(::Type{<:PM.AbstractPowerModel}) = PSY.ACBus
+balance_aggregation(::Type{CopperPlatePowerModel}) = PSY.System
+balance_aggregation(::Type{<:AbstractPTDFModel}) = PSY.System
+balance_aggregation(::Type{AreaBalancePowerModel}) = PSY.Area
+balance_aggregation(::Type{AreaPTDFPowerModel}) = PSY.Area
