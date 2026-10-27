@@ -79,7 +79,10 @@ function _update_parameter_values!(
         if !PSY.has_time_series(component, U, ts_name)
             continue
         end
-        ts_uuid = _get_ts_uuid(attributes, PSY.get_name(component))
+        # Components outside the subset passed to add_parameters! are not registered.
+        ts_uuid =
+            get(attributes.component_name_to_ts_uuid, PSY.get_name(component), nothing)
+        isnothing(ts_uuid) && continue
         if !(ts_uuid in ts_uuids)
             ts_vector = get_time_series_values!(
                 U,
@@ -236,7 +239,12 @@ function _update_parameter_values!(
     name_lookup = parameter_array.lookup[1]
     ts_uuids = Set{String}()
     for component in components
-        ts_uuid = _get_ts_uuid(attributes, PSY.get_name(component))
+        if !PSY.has_time_series(component, U, ts_name)
+            continue
+        end
+        ts_uuid =
+            get(attributes.component_name_to_ts_uuid, PSY.get_name(component), nothing)
+        isnothing(ts_uuid) && continue
         if !(ts_uuid in ts_uuids)
             # Note: This interface reads one single value per component at a time.
             value = get_time_series_values!(

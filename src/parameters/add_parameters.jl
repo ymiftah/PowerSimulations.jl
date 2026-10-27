@@ -18,22 +18,24 @@ end
 """
     add_parameters!(container, T, devices, model; meta, time_series_name)
 
-Add the time-series parameter `T` for `devices` under the device model `model`. Pass
-`meta` to key the parameter by a string so that several parameters of the same type can
-coexist for one device type, and `time_series_name` to read a series other than
-`get_time_series_names(model)[T]`.
+Add the time-series parameter `T` for `devices` under the device model `model`. The series
+is `time_series_name` when given, otherwise the one in `get_time_series_names(model)[T]`.
+Stock constructors look parameters up with the empty meta, so a parameter keyed by `meta`
+is only visible to code that passes the same meta. No container is created when no device
+carries the series. This keyword path covers device parameters only: branch parameters
+added through `add_branch_parameters!` ignore `meta` and `time_series_name`.
 
 # Arguments
 
   - `container::OptimizationContainer`: container receiving the parameter.
   - `T::Type{<:TimeSeriesParameter}`: parameter type.
-  - `devices`: devices of the model.
+  - `devices`: devices the parameter is added for.
   - `model::DeviceModel`: device model supplying the default series name.
 
 # Keyword Arguments
 
   - `meta::String`: container key meta; defaults to the empty meta.
-  - `time_series_name::Union{Nothing, String}`: series name; defaults to the one in `model`.
+  - `time_series_name::Union{Nothing, String}`: series name; defaults to the model's name.
 """
 function add_parameters!(
     container::OptimizationContainer,
@@ -51,7 +53,7 @@ function add_parameters!(
        has_container_key(container, T, D, meta)
         return
     end
-    _add_time_series_parameters!(
+    _add_parameters!(
         container,
         T(),
         devices,
@@ -251,13 +253,22 @@ function _add_parameters!(
     container::OptimizationContainer,
     param::T,
     devices::U,
-    model::DeviceModel{D, W},
+    model::DeviceModel{D, W};
+    meta::String = ISOPT.CONTAINER_KEY_EMPTY_META,
+    time_series_name::Union{Nothing, String} = nothing,
 ) where {
     T <: TimeSeriesParameter,
     U <: Union{Vector{D}, IS.FlattenIteratorWrapper{D}},
     W <: AbstractDeviceFormulation,
 } where {D <: PSY.Component}
-    _add_time_series_parameters!(container, param, devices, model)
+    _add_time_series_parameters!(
+        container,
+        param,
+        devices,
+        model;
+        meta = meta,
+        time_series_name = time_series_name,
+    )
     return
 end
 
