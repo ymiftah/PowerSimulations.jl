@@ -144,6 +144,30 @@ function _read_cost_time_series_values(
     return TimeSeries.values(ts_array)
 end
 
+# Cache entries are shared by key, so an entry built with scaling factors ignored must not
+# serve a read that applies them.
+function _has_unscaled_cache_entry(
+    model::DecisionModel,
+    component,
+    key::IS.ForecastKey,
+    interval::Dates.Millisecond,
+)
+    cache = get_time_series_cache(model)
+    cache_key = IS.TimeSeriesCacheKey(
+        IS.get_uuid(component),
+        IS.get_time_series_type(key),
+        IS.get_name(key),
+        get_resolution(get_settings(model)),
+        _to_is_interval(interval),
+    )
+    return haskey(cache, cache_key) && IS._get_ignore_scaling_factors(cache[cache_key])
+end
+
+# Returns the duration of a fixed-length period in milliseconds, or `nothing` for calendar
+# periods such as months, which have no fixed length.
+_fixed_period_milliseconds(period::Dates.FixedPeriod) = Dates.Millisecond(period)
+_fixed_period_milliseconds(::Dates.Period) = nothing
+
 # Static caches serve sequential reads only, so a window that does not start at the
 # cache's next timestamp replaces the cache entry.
 function _get_cached_cost_time_series_values!(
@@ -153,8 +177,13 @@ function _get_cached_cost_time_series_values!(
     start_time::Dates.DateTime,
     len::Int,
 )
+    resolution = _fixed_period_milliseconds(IS.get_resolution(key))
+    # The static cache only serves consecutive windows, which holds when each step
+    # advances the model by exactly one window.
+    if isnothing(resolution) || get_interval(get_settings(model)) != resolution * len
+        return _read_cost_time_series_values(component, key, start_time, len)
+    end
     cache = get_time_series_cache(model)
-    resolution = Dates.Millisecond(IS.get_resolution(key))
     cache_key = IS.TimeSeriesCacheKey(
         IS.get_uuid(component),
         IS.get_time_series_type(key),
@@ -162,6 +191,9 @@ function _get_cached_cost_time_series_values!(
         resolution,
         nothing,
     )
+    if haskey(cache, cache_key) && IS._get_ignore_scaling_factors(cache[cache_key])
+        return _read_cost_time_series_values(component, key, start_time, len)
+    end
     if !haskey(cache, cache_key) || IS.get_next_time(cache[cache_key]) != start_time
         cache[cache_key] = IS.StaticTimeSeriesCache(
             IS.get_time_series_type(key),
@@ -198,7 +230,9 @@ function _get_cached_cost_time_series_values!(
         Dates.Millisecond(IS.get_resolution(key)) == get_resolution(settings)
     interval_matches =
         get_interval(settings) in (UNSET_INTERVAL, interval)
-    if resolution_matches && interval_matches
+    if resolution_matches && interval_matches &&
+       !_has_unscaled_cache_entry(
+           model, component, key, interval)
         return get_time_series_values!(
             IS.get_time_series_type(key),
             model,
@@ -373,6 +407,7 @@ function handle_variable_cost_parameter(
     container,
     initial_forecast_time,
     horizon,
+    model::DecisionModel,
 )
     fuel_curve = PSY.get_variable(op_cost)
     # Nothing to update for this component if we don't have a fuel cost time series
