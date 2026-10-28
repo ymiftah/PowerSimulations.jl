@@ -1262,6 +1262,12 @@ _time_series_parameter_eltype(
     ::Type{<:ConstraintCoefficientParameter},
 ) = Float64
 
+# Cost parameters are applied as objective coefficients, never as JuMP parameters.
+_time_series_parameter_eltype(
+    ::OptimizationContainer,
+    ::Type{<:TimeSeriesCostParameter},
+) = Float64
+
 function _add_param_container!(
     container::OptimizationContainer,
     key::ParameterKey{T, U},
