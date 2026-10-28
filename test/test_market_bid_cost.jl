@@ -1099,3 +1099,380 @@ end
 
     @test isapprox(sum(p_var[!, "Alta"][15:24]), 0.0, atol = 1e-4)
 end
+
+# The shared MBC system has two forecast windows, one fewer than the simulation below
+# needs. Forecast window counts must agree across the system, so the load forecast is
+# extended by one window, then the MBC cost-at-min and offer curves get three windows.
+function _build_sys_incr_three_windows()
+    sys = load_sys_incr()
+    load = get_component(PowerLoad, sys, "Bus1")
+    old_load_ts = get_time_series(Deterministic, load, "max_active_power")
+    old_windows = collect(old_load_ts.data)
+    last_init, last_vals = old_windows[end]
+    load_data = OrderedDict(
+        old_windows...,
+        (last_init + old_load_ts.interval) => last_vals,
+    )
+    remove_time_series!(sys, Deterministic, load, "max_active_power")
+    add_time_series!(
+        sys,
+        load,
+        Deterministic(;
+            name = "max_active_power",
+            data = load_data,
+            resolution = old_load_ts.resolution,
+            interval = old_load_ts.interval,
+        ),
+    )
+    comp = get_component(ThermalStandard, sys, "Test Unit1")
+    op_cost = get_operation_cost(comp)
+    baseline = get_value_curve(get_incremental_offer_curves(op_cost))
+    baseline_pwl = get_function_data(baseline)
+    min_power = first(get_x_coords(baseline_pwl))
+    init_time = first(PSY.get_forecast_initial_times(sys))
+    horizon = PSY.get_forecast_horizon(sys)
+    interval = PSY.get_forecast_interval(sys)
+    resolution = first(PSY.get_time_series_resolutions(sys))
+    window_count = 3
+    initial_ts = make_deterministic_ts(
+        "initial_input incremental",
+        get_initial_input(baseline),
+        0.11,
+        0.05,
+        init_time,
+        horizon,
+        interval,
+        window_count,
+        resolution,
+    )
+    pwl_ts = make_deterministic_ts(
+        "variable_cost incremental",
+        baseline_pwl,
+        (0.02, 0.07, 0.03),
+        (0.02, 0.07, 0.03),
+        init_time,
+        horizon,
+        interval,
+        window_count,
+        resolution;
+        override_min_x = min_power,
+    )
+    initial_key = add_time_series!(sys, comp, initial_ts)
+    curve_key = add_time_series!(sys, comp, pwl_ts)
+    set_incremental_initial_input!(op_cost, initial_key)
+    set_incremental_offer_curves!(op_cost, curve_key)
+    return sys
+end
+
+# Runs a simulation of the given system and returns the per-step objective values and the
+# read-back slope and cost-at-min parameters.
+function _run_mbc_offer_curve_sim(sys::PSY.System; steps = 3, model_kwargs...)
+    template = ProblemTemplate(
+        NetworkModel(CopperPlatePowerModel; duals = [CopperPlateBalanceConstraint]),
+    )
+    set_formulations!(template, sys, FormulationDict())
+    model = DecisionModel(
+        template,
+        sys;
+        name = "UC",
+        store_variable_names = true,
+        optimizer = HiGHS_optimizer_small_gap,
+        model_kwargs...,
+    )
+    models = SimulationModels(; decision_models = [model])
+    sequence = SimulationSequence(;
+        models = models,
+        feedforwards = Dict(),
+        ini_cond_chronology = InterProblemChronology(),
+    )
+    sim = Simulation(;
+        name = "mbc_offer_curve_cache",
+        steps = steps,
+        models = models,
+        sequence = sequence,
+        initial_time = TIME1,
+        simulation_folder = mktempdir(),
+    )
+    @test build!(sim) == PSI.SimulationBuildStatus.BUILT
+    @test execute!(sim; in_memory = true) == PSI.RunStatus.SUCCESSFULLY_FINALIZED
+    res = get_decision_problem_results(SimulationResults(sim), "UC")
+    objectives = PSI.read_optimizer_stats(res)[!, "objective_value"]
+    slopes =
+        read_parameter_dict(
+            res,
+            PSI.IncrementalPiecewiseLinearSlopeParameter,
+            ThermalStandard,
+        )
+    cost_at_min =
+        read_parameter_dict(res, PSI.IncrementalCostAtMinParameter, ThermalStandard)
+    return objectives, slopes, cost_at_min
+end
+
+function _build_standalone_mbc_model(sys::PSY.System; model_kwargs...)
+    template = ProblemTemplate(
+        NetworkModel(CopperPlatePowerModel; duals = [CopperPlateBalanceConstraint]),
+    )
+    set_formulations!(template, sys, FormulationDict())
+    model = DecisionModel(
+        template,
+        sys;
+        name = "UC",
+        store_variable_names = true,
+        optimizer = HiGHS_optimizer_small_gap,
+        initial_time = TIME1,
+        model_kwargs...,
+    )
+    @test build!(model; output_dir = test_path) == PSI.ModelBuildStatus.BUILT
+    return model
+end
+
+# Runs one parameter update per execution count, mirroring the start of each simulation
+# update. Returns the cost parameter keys that were updated.
+function _update_mbc_cost_parameters!(model::DecisionModel, execution_counts)
+    container = PSI.get_optimization_container(model)
+    dataset = PSI.DatasetContainer{PSI.InMemoryDataset}()
+    keys_to_update = [
+        key for key in keys(PSI.get_parameters(model)) if key isa PSI.ParameterKey{
+            <:Union{
+                PSI.IncrementalPiecewiseLinearSlopeParameter,
+                PSI.IncrementalCostAtMinParameter,
+            },
+            ThermalStandard,
+        }
+    ]
+    for n in execution_counts
+        PSI.set_execution_count!(model, n)
+        PSI.cost_function_unsynch(container)
+        for key in keys_to_update
+            PSI.update_container_parameter_values!(container, model, key, dataset)
+        end
+    end
+    return keys_to_update
+end
+
+# Names of the offer-curve and cost-at-min series of the test unit.
+function _mbc_series_names(sys::PSY.System)
+    cost = PSY.get_operation_cost(get_component(ThermalStandard, sys, "Test Unit1"))
+    return (
+        IS.get_name(PSY.get_incremental_offer_curves(cost)),
+        IS.get_name(PSY.get_incremental_initial_input(cost)),
+    )
+end
+
+_cache_entries_named(model::DecisionModel, name::String) = [
+    v for (k, v) in PSI.get_time_series_cache(model)
+    if k isa IS.TimeSeriesCacheKey && k.name == name
+]
+
+@testset "Time-varying MarketBidCost offer curves read through the time series cache" begin
+    cached = _run_mbc_offer_curve_sim(_build_sys_incr_three_windows())
+    uncached = _run_mbc_offer_curve_sim(
+        _build_sys_incr_three_windows();
+        time_series_cache_size = 0,
+    )
+    @test length(cached[1]) == 3
+    @test cached[1] == uncached[1]
+    @test cached[2] == uncached[2]
+    @test cached[3] == uncached[3]
+
+    # One update on a freshly built model must leave the offer-curve and cost-at-min series
+    # in the model cache, which only the cached read path does.
+    sys = _build_sys_incr_three_windows()
+    model = _build_standalone_mbc_model(sys)
+    _update_mbc_cost_parameters!(model, [0])
+    offer_name, initial_name = _mbc_series_names(sys)
+    @test !isempty(_cache_entries_named(model, offer_name))
+    @test !isempty(_cache_entries_named(model, initial_name))
+end
+
+# SingleTimeSeries offer curves are stored as PiecewiseStepData, with a Float64 cost-at-min
+# series whose scaling factor multiplier is not the identity.
+function _build_sys_static_mbc(;
+    horizon::Int,
+    interval::Int,
+    steps::Int = 3,
+    features::NamedTuple = NamedTuple(),
+)
+    rows = (steps - 1) * interval + horizon
+    timestamps = range(TIME1; step = Hour(1), length = rows)
+    sys = PSY.System(100.0)
+    bus = PSY.ACBus(;
+        number = 1,
+        name = "bus1",
+        available = true,
+        bustype = PSY.ACBusTypes.REF,
+        angle = 0.0,
+        magnitude = 1.0,
+        voltage_limits = (min = 0.9, max = 1.1),
+        base_voltage = 230.0,
+    )
+    PSY.add_component!(sys, bus)
+    gen = PSY.ThermalStandard(;
+        name = "Test Unit1",
+        available = true,
+        status = true,
+        bus = bus,
+        active_power = 0.0,
+        reactive_power = 0.0,
+        rating = 2.0,
+        active_power_limits = (min = 0.0, max = 2.0),
+        reactive_power_limits = nothing,
+        ramp_limits = nothing,
+        operation_cost = PSY.ThermalGenerationCost(nothing),
+        base_power = 100.0,
+        prime_mover_type = PSY.PrimeMovers.ST,
+        fuel = PSY.ThermalFuels.COAL,
+    )
+    PSY.add_component!(sys, gen)
+    mbc = MarketBidCost(;
+        no_load_cost = 0.0,
+        start_up = (hot = 0.0, warm = 0.0, cold = 0.0),
+        shut_down = 0.0,
+    )
+    PSY.set_operation_cost!(gen, mbc)
+    curves = [
+        PSY.PiecewiseStepData(
+            [0.0, 100.0 + 0.5 * k, 200.0],
+            [10.0 + 0.5 * k, 20.0 + 0.5 * k],
+        )
+        for k in 0:(rows - 1)
+    ]
+    offer_ts = PSY.SingleTimeSeries(;
+        name = "offer_curves",
+        data = TimeArray(timestamps, curves),
+    )
+    initial_ts = PSY.SingleTimeSeries(;
+        name = "initial_input",
+        data = TimeArray(timestamps, [5.0 + 0.2 * k for k in 0:(rows - 1)]),
+        scaling_factor_multiplier = PSY.get_max_active_power,
+    )
+    offer_key = PSY.add_time_series!(sys, gen, offer_ts; features...)
+    initial_key = PSY.add_time_series!(sys, gen, initial_ts; features...)
+    PSY.set_incremental_offer_curves!(mbc, offer_key)
+    PSY.set_incremental_initial_input!(mbc, initial_key)
+
+    load = PSY.PowerLoad(;
+        name = "load",
+        available = true,
+        bus = bus,
+        active_power = 0.5,
+        reactive_power = 0.0,
+        base_power = 100.0,
+        max_active_power = 0.5,
+        max_reactive_power = 0.0,
+    )
+    PSY.add_component!(sys, load)
+    PSY.add_time_series!(
+        sys,
+        load,
+        PSY.SingleTimeSeries("max_active_power", TimeArray(timestamps, fill(0.5, rows))),
+    )
+    return sys
+end
+
+@testset "SingleTimeSeries MarketBidCost offer curves read through the static cache" begin
+    @testset "Non-overlapping windows reuse one static cache entry" begin
+        build_sys() = _build_sys_static_mbc(; horizon = 2, interval = 2)
+        cached = _run_mbc_offer_curve_sim(
+            build_sys();
+            horizon = Hour(2),
+            interval = Hour(2),
+        )
+        uncached = _run_mbc_offer_curve_sim(
+            build_sys();
+            horizon = Hour(2),
+            interval = Hour(2),
+            time_series_cache_size = 0,
+        )
+        @test length(cached[1]) == 3
+        @test cached[1] == uncached[1]
+        @test cached[2] == uncached[2]
+        @test cached[3] == uncached[3]
+
+        sys = build_sys()
+        model = _build_standalone_mbc_model(sys; horizon = Hour(2), interval = Hour(2))
+        _update_mbc_cost_parameters!(model, [0])
+        offer_name, initial_name = _mbc_series_names(sys)
+        first_entry = only(_cache_entries_named(model, offer_name))
+        @test only(_cache_entries_named(model, initial_name)) isa IS.StaticTimeSeriesCache
+        _update_mbc_cost_parameters!(model, [1])
+        @test only(_cache_entries_named(model, offer_name)) === first_entry
+        _update_mbc_cost_parameters!(model, [2])
+        @test only(_cache_entries_named(model, offer_name)) === first_entry
+    end
+
+    @testset "Overlapping windows bypass the static cache" begin
+        build_sys() = _build_sys_static_mbc(; horizon = 3, interval = 1)
+        cached = _run_mbc_offer_curve_sim(
+            build_sys();
+            horizon = Hour(3),
+            interval = Hour(1),
+        )
+        uncached = _run_mbc_offer_curve_sim(
+            build_sys();
+            horizon = Hour(3),
+            interval = Hour(1),
+            time_series_cache_size = 0,
+        )
+        @test length(cached[1]) == 3
+        @test cached[1] == uncached[1]
+        @test cached[2] == uncached[2]
+        @test cached[3] == uncached[3]
+
+        sys = build_sys()
+        model = _build_standalone_mbc_model(sys; horizon = Hour(3), interval = Hour(1))
+        _update_mbc_cost_parameters!(model, [0, 1, 2])
+        offer_name, initial_name = _mbc_series_names(sys)
+        @test isempty(_cache_entries_named(model, offer_name))
+        @test isempty(_cache_entries_named(model, initial_name))
+    end
+
+    @testset "Series with features leave no cache entry" begin
+        sys = _build_sys_static_mbc(; horizon = 2, interval = 2, features = (case = "low",))
+        model = _build_standalone_mbc_model(sys; horizon = Hour(2), interval = Hour(2))
+        _update_mbc_cost_parameters!(model, [0, 1])
+        offer_name, _ = _mbc_series_names(sys)
+        @test isempty(_cache_entries_named(model, offer_name))
+    end
+
+    @testset "Entry built without scaling factors is not reused" begin
+        sys = _build_sys_static_mbc(; horizon = 2, interval = 2)
+        model = _build_standalone_mbc_model(sys; horizon = Hour(2), interval = Hour(2))
+        _, initial_name = _mbc_series_names(sys)
+        gen = get_component(ThermalStandard, sys, "Test Unit1")
+        cost = PSY.get_operation_cost(gen)
+        cache = PSI.get_time_series_cache(model)
+        unscaled_key = IS.TimeSeriesCacheKey(
+            IS.get_uuid(gen),
+            IS.SingleTimeSeries,
+            initial_name,
+            Dates.Millisecond(Hour(1)),
+            nothing,
+        )
+        cache[unscaled_key] = IS.StaticTimeSeriesCache(
+            IS.SingleTimeSeries,
+            gen,
+            initial_name;
+            start_time = TIME1,
+            resolution = Hour(1),
+            ignore_scaling_factors = true,
+        )
+        keys_to_update = _update_mbc_cost_parameters!(model, [0])
+        expected = TimeSeries.values(
+            PSY.get_incremental_initial_input(gen, cost; start_time = TIME1, len = 2),
+        )
+        key = only(
+            filter(
+                k ->
+                    k isa PSI.ParameterKey{
+                        PSI.IncrementalCostAtMinParameter,
+                        ThermalStandard,
+                    },
+                keys_to_update,
+            ),
+        )
+        values = PSI.get_parameter_array(PSI.get_optimization_container(model), key)
+        @test [values["Test Unit1", t] for t in 1:2] == expected
+        @test IS._get_ignore_scaling_factors(cache[unscaled_key])
+    end
+end
