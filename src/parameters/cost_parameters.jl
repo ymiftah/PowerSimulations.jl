@@ -101,10 +101,6 @@ function _apply_cost_targets!(
     param_container::ParameterContainer,
 )
     targets = get_cost_targets(get_attributes(param_container))
-    isempty(targets) && return
-    # Terms that are all zero leave the variant expression empty, so the objective would
-    # otherwise look synchronized and keep a stale coefficient.
-    set_synchronized_status!(get_objective_expression(container), false)
     parent_param = get_parameter_array_data(param_container)
     parent_mult = get_multiplier_array_data(param_container)
     for target in targets
