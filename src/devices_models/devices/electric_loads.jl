@@ -528,10 +528,14 @@ proportional_cost(
     ::PowerLoadInterruption,
     t::Int,
 ) =
-    _lookup_maybe_time_variant_param(container, comp, t,
+    if !_has_energy_offers(DecrementalCostAtMinParameter(), cost)
+        0.0
+    else
+        _lookup_maybe_time_variant_param(container, comp, t,
         Val(is_time_variant(PSY.get_decremental_initial_input(cost))),
         PSY.get_initial_input ∘ PSY.get_decremental_offer_curves ∘ PSY.get_operation_cost,
         DecrementalCostAtMinParameter())
+    end
 
 ########## PowerLoadShift Formulation Costs ###############
 

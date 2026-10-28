@@ -13,6 +13,13 @@ get_offer_curves_maybe_decremental(::Val{true}, device::PSY.StaticInjection) =
 get_offer_curves_maybe_decremental(::Val{false}, device::PSY.StaticInjection) =
     get_output_offer_curves(PSY.get_operation_cost(device))
 
+# A nothing offer curve means no energy offers on that side (the device may still carry
+# ancillary-service bids), so the side adds no parameters, variables or cost terms.
+_has_energy_offers(::IncrementalCostAtMinParameter, op_cost::PSY.OfferCurveCost) =
+    !isnothing(get_output_offer_curves(op_cost))
+_has_energy_offers(::DecrementalCostAtMinParameter, op_cost::PSY.OfferCurveCost) =
+    !isnothing(get_input_offer_curves(op_cost))
+
 # Dictionaries to handle more incremental (false) vs. decremental (true) cases
 const _SLOPE_PARAMS::Dict{Bool, Type{<:AbstractPiecewiseLinearSlopeParameter}} = Dict(
     false => IncrementalPiecewiseLinearSlopeParameter,
@@ -97,6 +104,7 @@ _has_parameter_time_series(
     device::PSY.StaticInjection,
 ) where {T <: AbstractCostAtMinParameter} =
     _has_offer_curve_cost(device) &&
+    _has_energy_offers(T(), PSY.get_operation_cost(device)) &&
     is_time_variant(_get_parameter_field(T(), PSY.get_operation_cost(device)))
 
 _has_parameter_time_series(
@@ -114,6 +122,7 @@ _has_parameter_time_series(
     is_time_variant(_get_parameter_field(T(), PSY.get_operation_cost(device)))
 
 function validate_initial_input_time_series(device::PSY.StaticInjection, decremental::Bool)
+    isnothing(get_offer_curves_maybe_decremental(Val(decremental), device)) && return
     initial_input = get_initial_input_maybe_decremental(Val(decremental), device)
     initial_is_ts = is_time_variant(initial_input)
     variable_is_ts = is_time_variant(
@@ -142,6 +151,7 @@ end
 
 function validate_occ_breakpoints_slopes(device::PSY.StaticInjection, decremental::Bool)
     offer_curves = get_offer_curves_maybe_decremental(Val(decremental), device)
+    isnothing(offer_curves) && return
     device_name = get_name(device)
     is_ts = is_time_variant(offer_curves)
     expected_type = if is_ts
@@ -893,6 +903,7 @@ function _add_variable_cost_to_objective!(
     if !isnothing(get_input_offer_curves(cost_function))
         error("Component $(component_name) is not allowed to participate as a demand.")
     end
+    isnothing(get_output_offer_curves(cost_function)) && return
     add_pwl_term!(
         false, # I suspect this is a problem. could very well be decremental, storage
         container,
@@ -917,6 +928,7 @@ function _add_variable_cost_to_objective!(
     if !(isnothing(get_output_offer_curves(cost_function)))
         error("Component $(component_name) is not allowed to participate as a supply.")
     end
+    isnothing(get_input_offer_curves(cost_function)) && return
     add_pwl_term!(
         true,
         container,
@@ -977,6 +989,7 @@ function _add_vom_cost_to_objective!(
     ::U,
 ) where {T <: VariableType, U <: AbstractDeviceFormulation}
     incremental_cost_curves = get_output_offer_curves(op_cost)
+    isnothing(incremental_cost_curves) && return
     if is_time_variant(incremental_cost_curves)
         # TODO this might imply a change to the MBC struct?
         @warn "Incremental curves are time variant, there is no VOM cost source. Skipping VOM cost."
@@ -1002,6 +1015,7 @@ function _add_vom_cost_to_objective!(
 ) where {T <: VariableType,
     U <: AbstractControllablePowerLoadFormulation}
     decremental_cost_curves = get_input_offer_curves(op_cost)
+    isnothing(decremental_cost_curves) && return
     if is_time_variant(decremental_cost_curves)
         # TODO this might imply a change to the MBC struct?
         @warn "Decremental curves are time variant, there is no VOM cost source. Skipping VOM cost."

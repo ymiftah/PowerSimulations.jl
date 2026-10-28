@@ -295,6 +295,7 @@ function handle_variable_cost_parameter(
     horizon,
     model::DecisionModel,
 )
+    _has_energy_offers(param, op_cost) || return
     key = _get_parameter_field(param, op_cost)
     is_time_variant(key) || return
     values = _get_cost_time_series_values!(

@@ -90,6 +90,7 @@ end
 is_time_variant_term(::OptimizationContainer, ::PSY.ThermalGenerationCost, ::OnVariable, ::PSY.ThermalGen, ::AbstractThermalFormulation, t::Int) = false
 
 proportional_cost(container::OptimizationContainer, cost::PSY.MarketBidCost, ::OnVariable, comp::PSY.ThermalGen, ::AbstractThermalFormulation, t::Int) =
+    !_has_energy_offers(IncrementalCostAtMinParameter(), cost) ? 0.0 :
     _lookup_maybe_time_variant_param(container, comp, t,
     Val(is_time_variant(PSY.get_incremental_initial_input(cost))),
     PSY.get_initial_input ∘ PSY.get_incremental_offer_curves ∘ PSY.get_operation_cost,
