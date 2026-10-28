@@ -549,6 +549,10 @@ abstract type ConstraintCoefficientParameter <: TimeSeriesParameter end
 
 """
 Time-series parameter whose values are linear objective coefficients; see `add_cost_target!`.
+
+Values are stored as `Float64` in every build mode and are never JuMP parameters. They are
+written to results as value times multiplier, without the `scale` of each target. Not
+supported for models built with `rebuild_model = true`.
 """
 abstract type TimeSeriesCostParameter <: TimeSeriesParameter end
 

@@ -182,7 +182,11 @@ function PSI.construct_device!(
     return
 end
 
-function _cost_test_system(series::Dict{String, Vector{Float64}})
+function _cost_test_system(
+    series::Dict{String, Vector{Float64}};
+    horizon = Hour(1),
+    shared_to = String[],
+)
     sys = PSY.System(100.0)
     bus = PSY.ACBus(;
         number = 1,
@@ -233,14 +237,16 @@ function _cost_test_system(series::Dict{String, Vector{Float64}})
         PSY.SingleTimeSeries("max_active_power", TimeArray(timestamps, ones(n))),
     )
     gen_a = PSY.get_component(PSY.ThermalStandard, sys, "gen_a")
+    shared_names = [name for name in shared_to]
     for (ts_name, values) in series
-        PSY.add_time_series!(
-            sys,
-            gen_a,
-            PSY.SingleTimeSeries(ts_name, TimeArray(timestamps, values)),
-        )
+        # The same series object is attached to every listed generator.
+        ts = PSY.SingleTimeSeries(ts_name, TimeArray(timestamps, values))
+        PSY.add_time_series!(sys, gen_a, ts)
+        for name in shared_names
+            PSY.add_time_series!(sys, PSY.get_component(PSY.ThermalStandard, sys, name), ts)
+        end
     end
-    PSY.transform_single_time_series!(sys, Hour(1), Hour(1))
+    PSY.transform_single_time_series!(sys, horizon, Hour(1))
     return sys
 end
 
@@ -398,4 +404,305 @@ end
     )
     @test build!(model; output_dir = output_dir, console_level = Logging.AboveMaxLevel) ==
           PSI.ModelBuildStatus.FAILED
+end
+
+# Both generators share one price series object, so they share one parameter row but keep
+# their own multiplier rows.
+struct SharedCostDispatch <: PSI.AbstractThermalDispatchFormulation end
+PSI.get_multiplier_value(
+    ::TestCostParameter,
+    d::PSY.ThermalStandard,
+    ::SharedCostDispatch,
+) = PSY.get_name(d) == "gen_a" ? 2.0 : 0.5
+
+function PSI.construct_device!(
+    container::PSI.OptimizationContainer,
+    sys::PSY.System,
+    ::PSI.ArgumentConstructStage,
+    model::PSI.DeviceModel{PSY.ThermalStandard, SharedCostDispatch},
+    network_model::PSI.NetworkModel{<:PM.AbstractActivePowerModel},
+)
+    devices = PSI.get_available_components(model, sys)
+    PSI.add_variables!(container, PSI.ActivePowerVariable, devices, SharedCostDispatch())
+    PSI.add_parameters!(
+        container,
+        TestCostParameter,
+        devices,
+        model;
+        time_series_name = "price",
+    )
+    PSI.add_to_expression!(
+        container,
+        PSI.ActivePowerBalance,
+        PSI.ActivePowerVariable,
+        devices,
+        model,
+        network_model,
+    )
+    return
+end
+
+function PSI.construct_device!(
+    container::PSI.OptimizationContainer,
+    ::PSY.System,
+    ::PSI.ModelConstructStage,
+    model::PSI.DeviceModel{PSY.ThermalStandard, SharedCostDispatch},
+    ::PSI.NetworkModel{<:PM.AbstractActivePowerModel},
+)
+    time_steps = PSI.get_time_steps(container)
+    p = PSI.get_variable(container, PSI.ActivePowerVariable(), PSY.ThermalStandard)
+    key = PSI.ParameterKey(TestCostParameter, PSY.ThermalStandard)
+    names = collect(PSI.get_component_names(PSI.get_parameter_attributes(container, key)))
+    for name in names, t in time_steps
+        PSI.add_cost_target!(container, key, name, (), t, p[name, t], 1.0)
+    end
+    return
+end
+
+@testset "Shared series row keeps per-device multipliers" begin
+    prices = [1.0, 2.0, 4.0, 3.0, 5.0]
+    sys = _cost_test_system(
+        Dict("price" => prices);
+        horizon = Hour(3),
+        shared_to = ["gen_b"],
+    )
+    model = DecisionModel(
+        _cost_test_template(SharedCostDispatch),
+        sys;
+        name = "ED",
+        optimizer = HiGHS_optimizer,
+        initial_time = COST_TEST_START,
+    )
+    sim = Simulation(;
+        name = "shared_cost",
+        steps = 3,
+        models = SimulationModels(; decision_models = [model]),
+        sequence = SimulationSequence(;
+            models = SimulationModels(; decision_models = [model]),
+            ini_cond_chronology = InterProblemChronology(),
+        ),
+        initial_time = COST_TEST_START,
+        simulation_folder = mktempdir(; cleanup = true),
+    )
+    @test build!(sim) == PSI.SimulationBuildStatus.BUILT
+    @test execute!(sim) == PSI.RunStatus.SUCCESSFULLY_FINALIZED
+
+    key = PSI.ParameterKey(TestCostParameter, ThermalStandard)
+    container = PSI.get_optimization_container(model)
+    @test length(axes(PSI.get_parameter_array(container, key), 1)) == 1
+    # The final step starts at hour 3, so horizon hours 3 to 5 are the cost coefficients.
+    obj = JuMP.objective_function(PSI.get_jump_model(container))
+    p = PSI.get_variable(container, ActivePowerVariable(), ThermalStandard)
+    for t in 1:3
+        @test isapprox(
+            JuMP.coefficient(obj, p["gen_a", t]),
+            2.0 * prices[2 + t];
+            atol = 1e-9,
+        )
+        @test isapprox(
+            JuMP.coefficient(obj, p["gen_b", t]),
+            0.5 * prices[2 + t];
+            atol = 1e-9,
+        )
+    end
+
+    res = get_decision_problem_results(SimulationResults(sim), "ED")
+    stats = read_optimizer_stats(res)
+    power = read_realized_variable(
+        res,
+        ActivePowerVariable,
+        ThermalStandard;
+        table_format = TableFormat.WIDE,
+    )
+    # gen_b is the cheaper unit at every step, so it carries the 1 pu load.
+    for step in 1:3
+        @test isapprox(power[step, "gen_b"], 100.0; atol = 1e-6)
+        @test isapprox(power[step, "gen_a"], 0.0; atol = 1e-6)
+        expected = sum(0.5 * prices[step + t - 1] for t in 1:3)
+        @test isapprox(stats[step, "objective_value"], expected; atol = 1e-6)
+    end
+end
+
+# Service-owned cost parameter on two reserves with distinct series. Their up and down
+# slacks are forced to 0.5 and 0.25 so both directions of the coefficient are used.
+struct TestPenaltyParameter <: PSI.TimeSeriesCostParameter end
+struct TestPenaltyService <: PSI.AbstractReservesFormulation end
+struct ServiceTestDispatch <: PSI.AbstractThermalDispatchFormulation end
+const SERVICE_TEST_SLACKS = Dict{
+    Tuple{String, Int},
+    NamedTuple{(:up, :down), Tuple{JuMP.VariableRef, JuMP.VariableRef}},
+}()
+
+PSI.get_multiplier_value(::TestPenaltyParameter, ::PSY.Service, ::TestPenaltyService) = 1.0
+
+function PSI.construct_device!(
+    container::PSI.OptimizationContainer,
+    sys::PSY.System,
+    ::PSI.ArgumentConstructStage,
+    model::PSI.DeviceModel{PSY.ThermalStandard, ServiceTestDispatch},
+    network_model::PSI.NetworkModel{<:PM.AbstractActivePowerModel},
+)
+    devices = PSI.get_available_components(model, sys)
+    PSI.add_variables!(container, PSI.ActivePowerVariable, devices, ServiceTestDispatch())
+    PSI.add_to_expression!(
+        container,
+        PSI.ActivePowerBalance,
+        PSI.ActivePowerVariable,
+        devices,
+        model,
+        network_model,
+    )
+    return
+end
+
+function PSI.construct_device!(
+    ::PSI.OptimizationContainer,
+    ::PSY.System,
+    ::PSI.ModelConstructStage,
+    ::PSI.DeviceModel{PSY.ThermalStandard, ServiceTestDispatch},
+    ::PSI.NetworkModel{<:PM.AbstractActivePowerModel},
+)
+    return
+end
+
+function PSI.construct_service!(
+    container::PSI.OptimizationContainer,
+    sys::PSY.System,
+    ::PSI.ArgumentConstructStage,
+    model::PSI.ServiceModel{SR, TestPenaltyService},
+    ::Dict{Symbol, PSI.DeviceModel},
+    ::Set{<:DataType},
+    ::PSI.NetworkModel{<:PM.AbstractPowerModel},
+) where {SR <: PSY.Reserve}
+    service = PSY.get_component(SR, sys, PSI.get_service_name(model))
+    PSI.add_parameters!(container, TestPenaltyParameter, service, model)
+    return
+end
+
+function PSI.construct_service!(
+    container::PSI.OptimizationContainer,
+    ::PSY.System,
+    ::PSI.ModelConstructStage,
+    model::PSI.ServiceModel{SR, TestPenaltyService},
+    ::Dict{Symbol, PSI.DeviceModel},
+    ::Set{<:DataType},
+    ::PSI.NetworkModel{<:PM.AbstractPowerModel},
+) where {SR <: PSY.Reserve}
+    name = PSI.get_service_name(model)
+    jump_model = PSI.get_jump_model(container)
+    for t in PSI.get_time_steps(container)
+        up = JuMP.@variable(jump_model, lower_bound = 0.5, upper_bound = 1.0)
+        down = JuMP.@variable(jump_model, lower_bound = 0.0, upper_bound = 0.25)
+        SERVICE_TEST_SLACKS[(name, t)] = (up = up, down = down)
+        PSI.add_cost_target!(container, TestPenaltyParameter(), SR, name, (), t, up, 1.0)
+        PSI.add_cost_target!(container, TestPenaltyParameter(), SR, name, (), t, down, -1.0)
+    end
+    return
+end
+
+@testset "Service-owned cost parameter targets each service's own slacks" begin
+    penalties = Dict("R1" => [1.0, 0.0, 3.0], "R2" => [2.0, 1.0, 0.5])
+    sys = _cost_test_system(Dict("price" => ones(3)))
+    for name in ("R1", "R2")
+        reserve = PSY.ConstantReserve{PSY.ReserveUp}(name, true, 30.0, 0.5)
+        PSY.add_service!(
+            sys,
+            reserve,
+            PSY.get_components(PSY.ThermalStandard, sys),
+        )
+        PSY.add_time_series!(
+            sys,
+            reserve,
+            PSY.SingleTimeSeries(
+                "penalty",
+                TimeArray(
+                    range(COST_TEST_START; step = Hour(1), length = 3),
+                    penalties[name],
+                ),
+            ),
+        )
+    end
+    PSY.transform_single_time_series!(sys, Hour(1), Hour(1))
+
+    template = ProblemTemplate(
+        NetworkModel(CopperPlatePowerModel; duals = [CopperPlateBalanceConstraint]),
+    )
+    set_device_model!(template, DeviceModel(ThermalStandard, ServiceTestDispatch))
+    set_device_model!(template, PowerLoad, StaticPowerLoad)
+    for name in ("R1", "R2")
+        set_service_model!(
+            template,
+            ServiceModel(
+                ConstantReserve{ReserveUp},
+                TestPenaltyService,
+                name;
+                time_series_names = Dict(TestPenaltyParameter => "penalty"),
+            ),
+        )
+    end
+    model = DecisionModel(
+        template,
+        sys;
+        name = "ED",
+        optimizer = HiGHS_optimizer,
+        initial_time = COST_TEST_START,
+    )
+    sim = Simulation(;
+        name = "service_cost",
+        steps = 3,
+        models = SimulationModels(; decision_models = [model]),
+        sequence = SimulationSequence(;
+            models = SimulationModels(; decision_models = [model]),
+            ini_cond_chronology = InterProblemChronology(),
+        ),
+        initial_time = COST_TEST_START,
+        simulation_folder = mktempdir(; cleanup = true),
+    )
+    @test build!(sim) == PSI.SimulationBuildStatus.BUILT
+    @test execute!(sim) == PSI.RunStatus.SUCCESSFULLY_FINALIZED
+
+    # Per step the net contribution of one service is price * (0.5 - 0.25).
+    res = get_decision_problem_results(SimulationResults(sim), "ED")
+    stats = read_optimizer_stats(res)
+    for step in 1:3
+        expected = sum(0.25 * penalties[name][step] for name in ("R1", "R2"))
+        @test isapprox(stats[step, "objective_value"], expected; atol = 1e-6)
+    end
+
+    # The final step's coefficients come from each service's own series.
+    container = PSI.get_optimization_container(model)
+    obj = JuMP.objective_function(PSI.get_jump_model(container))
+    for name in ("R1", "R2")
+        up = SERVICE_TEST_SLACKS[(name, 1)].up
+        down = SERVICE_TEST_SLACKS[(name, 1)].down
+        @test isapprox(JuMP.coefficient(obj, up), penalties[name][3]; atol = 1e-9)
+        @test isapprox(JuMP.coefficient(obj, down), -penalties[name][3]; atol = 1e-9)
+    end
+end
+
+@testset "add_cost_target! rejects wrong indices and time steps" begin
+    series = _cost_test_series(CostTestDispatch{:single}())
+    model = _cost_test_model(
+        CostTestDispatch{:single},
+        series;
+        name = "bad_args",
+        initial_time = COST_TEST_START,
+    )
+    @test build!(model; output_dir = mktempdir(; cleanup = true)) ==
+          PSI.ModelBuildStatus.BUILT
+    container = PSI.get_optimization_container(model)
+    key = PSI.ParameterKey(TestCostParameter, ThermalStandard)
+    p = PSI.get_variable(container, ActivePowerVariable(), ThermalStandard)
+    # The parameter has no additional axis, so an index is an error.
+    @test_throws ErrorException PSI.add_cost_target!(
+        container, key, "gen_a", (1,), 1, p["gen_a", 1], 1.0,
+    )
+    # Two indices are outside the supported shape.
+    @test_throws MethodError PSI.add_cost_target!(
+        container, key, "gen_a", (1, 1), 1, p["gen_a", 1], 1.0,
+    )
+    # The model has one time step.
+    @test_throws ErrorException PSI.add_cost_target!(
+        container, key, "gen_a", (), 2, p["gen_a", 1], 1.0,
+    )
 end

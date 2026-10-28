@@ -4,17 +4,18 @@
 Add `scale * value * multiplier * variable` to the variant objective, where `value` and
 `multiplier` are read at `(name, indices..., t)` of the [`TimeSeriesCostParameter`](@ref)
 stored under `key`. Simulation updates rebuild the variant terms from the parameter values
-after each parameter update.
+after each parameter update. Not supported for models built with `rebuild_model = true`.
 
 # Arguments
 
   - `container::OptimizationContainer`: container holding the parameter.
   - `key::ParameterKey{T, U}`: key of a parameter with `T <: TimeSeriesCostParameter` and
     `U` a component or service type.
-  - `name::String`: component or service name on the parameter's first axis.
-  - `indices::Tuple{Vararg{Int}}`: integer positions on the additional axes between the
-    component and time axes; `()` for a (component, time) parameter.
-  - `t::Int`: time step.
+  - `name::String`: component name, or service name for service-owned parameters, on the
+    parameter's first axis.
+  - `indices`: integer position on the single additional axis, or `()` when the parameter
+    has none. At most one additional axis is supported.
+  - `t::Int`: time step, between 1 and the number of time steps of the parameter.
   - `variable::JuMP.VariableRef`: variable whose objective coefficient is set.
   - `scale::Float64`: factor applied to the parameter value.
 """
@@ -22,7 +23,7 @@ function add_cost_target!(
     container::OptimizationContainer,
     key::ParameterKey{T, U},
     name::String,
-    indices::Tuple{Vararg{Int}},
+    indices::Union{Tuple{}, Tuple{Int}},
     t::Int,
     variable::JuMP.VariableRef,
     scale::Float64,
@@ -36,14 +37,18 @@ function add_cost_target!(
     if !(param_array isa DenseAxisArray)
         error("$T requires a dense parameter array")
     end
-    if ndims(param_array) != 2 + length(indices)
+    n_additional = ndims(param_array) - 2
+    if length(indices) != n_additional
         error(
-            "$T with $(ndims(param_array) - 2) additional axes needs $(ndims(param_array) - 2) " *
-            "indices, got $(length(indices))",
+            "$T has $n_additional additional axes; expected $n_additional indices, " *
+            "got $(length(indices))",
         )
     end
     if !(1 <= t <= size(param_array, ndims(param_array)))
-        error("Time step $t is outside the time steps of $T")
+        error(
+            "Time step $t is outside the $(size(param_array, ndims(param_array))) time " *
+            "steps of $T",
+        )
     end
     attributes = get_attributes(param_container)
     param_row = param_array.lookup[1][_get_ts_uuid(attributes, name)]
@@ -66,12 +71,35 @@ function add_cost_target!(
     ::T,
     ::Type{U},
     name::String,
-    indices::Tuple{Vararg{Int}},
+    indices::Union{Tuple{}, Tuple{Int}},
     t::Int,
     variable::JuMP.VariableRef,
     scale::Float64;
     meta = ISOPT.CONTAINER_KEY_EMPTY_META,
-) where {T <: TimeSeriesCostParameter, U <: Union{PSY.Component, PSY.Service}}
+) where {T <: TimeSeriesCostParameter, U <: PSY.Component}
+    return add_cost_target!(
+        container,
+        ParameterKey(T, U, meta),
+        name,
+        indices,
+        t,
+        variable,
+        scale,
+    )
+end
+
+# Service-owned parameters are keyed by the service name.
+function add_cost_target!(
+    container::OptimizationContainer,
+    ::T,
+    ::Type{U},
+    name::String,
+    indices::Union{Tuple{}, Tuple{Int}},
+    t::Int,
+    variable::JuMP.VariableRef,
+    scale::Float64;
+    meta = name,
+) where {T <: TimeSeriesCostParameter, U <: PSY.Service}
     return add_cost_target!(
         container,
         ParameterKey(T, U, meta),
@@ -92,7 +120,7 @@ function _add_cost_target_term!(
     coefficient =
         target.scale * parent_param[target.param_index] *
         parent_mult[target.multiplier_index]
-    add_to_objective_variant_expression!(container, coefficient * target.variable)
+    add_to_objective_variant_expression!(container, coefficient, target.variable)
     return
 end
 
@@ -100,10 +128,9 @@ function _apply_cost_targets!(
     container::OptimizationContainer,
     param_container::ParameterContainer,
 )
-    targets = get_cost_targets(get_attributes(param_container))
     parent_param = get_parameter_array_data(param_container)
     parent_mult = get_multiplier_array_data(param_container)
-    for target in targets
+    for target in get_cost_targets(get_attributes(param_container))
         _add_cost_target_term!(container, parent_param, parent_mult, target)
     end
     return

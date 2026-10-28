@@ -1912,6 +1912,21 @@ function add_to_objective_variant_expression!(
     return
 end
 
+# Adds `coefficient * variable` without allocating an intermediate expression.
+function add_to_objective_variant_expression!(
+    container::OptimizationContainer,
+    coefficient::Float64,
+    variable::JuMP.VariableRef,
+)
+    set_has_variant_contributors!(container.objective_function)
+    JuMP.add_to_expression!(
+        container.objective_function.variant_terms,
+        coefficient,
+        variable,
+    )
+    return
+end
+
 function deserialize_key(container::OptimizationContainer, name::AbstractString)
     return deserialize_key(container.metadata, name)
 end
