@@ -34,6 +34,7 @@ function _update_parameter_values!(
             container,
             initial_forecast_time,
             horizon,
+            model,
         )
     end
     return
@@ -115,8 +116,106 @@ _maybe_tuple(::StartupCostParameter, value) = Tuple(value)
 _maybe_tuple(::ShutdownCostParameter, value) = value
 _maybe_tuple(::AbstractCostAtMinParameter, value) = value
 
+# Returns the `len` values of the cost time series `key` starting at `start_time`, exactly
+# as the PSY getter returns them. The model time-series cache is used only when the key has
+# no features, because cache keys do not carry features or scaling-factor selection.
+function _get_cost_time_series_values!(
+    model::DecisionModel,
+    component,
+    key::IS.TimeSeriesKey,
+    start_time::Dates.DateTime,
+    len::Int,
+)
+    settings = get_settings(model)
+    if use_time_series_cache(settings) && isempty(key.features)
+        return _get_cached_cost_time_series_values!(model, component, key, start_time, len)
+    end
+    return _read_cost_time_series_values(component, key, start_time, len)
+end
+
+function _read_cost_time_series_values(
+    component,
+    key::IS.TimeSeriesKey,
+    start_time::Dates.DateTime,
+    len::Int,
+)
+    ts = IS.get_time_series(component, key; start_time = start_time, len = len, count = 1)
+    ts_array = PSY.read_and_convert_ts(ts, component, start_time, len, nothing)
+    return TimeSeries.values(ts_array)
+end
+
+# Static caches serve sequential reads only, so a window that does not start at the
+# cache's next timestamp replaces the cache entry.
+function _get_cached_cost_time_series_values!(
+    model::DecisionModel,
+    component,
+    key::IS.StaticTimeSeriesKey,
+    start_time::Dates.DateTime,
+    len::Int,
+)
+    cache = get_time_series_cache(model)
+    resolution = Dates.Millisecond(IS.get_resolution(key))
+    cache_key = IS.TimeSeriesCacheKey(
+        IS.get_uuid(component),
+        IS.get_time_series_type(key),
+        IS.get_name(key),
+        resolution,
+        nothing,
+    )
+    if !haskey(cache, cache_key) || IS.get_next_time(cache[cache_key]) != start_time
+        cache[cache_key] = IS.StaticTimeSeriesCache(
+            IS.get_time_series_type(key),
+            component,
+            IS.get_name(key);
+            start_time = start_time,
+            resolution = IS.get_resolution(key),
+            ignore_scaling_factors = false,
+        )
+    end
+    ts_cache = cache[cache_key]
+    return [
+        only(
+            TimeSeries.values(
+                IS.get_time_series_array!(ts_cache, start_time + resolution * i),
+            ),
+        )
+        for i in 0:(len - 1)
+    ]
+end
+
+# Forecast values go through the forecast cache when the key's resolution and interval
+# match the model's settings; other keys are read directly.
+function _get_cached_cost_time_series_values!(
+    model::DecisionModel,
+    component,
+    key::IS.ForecastKey,
+    start_time::Dates.DateTime,
+    len::Int,
+)
+    settings = get_settings(model)
+    interval = Dates.Millisecond(key.interval)
+    resolution_matches =
+        Dates.Millisecond(IS.get_resolution(key)) == get_resolution(settings)
+    interval_matches =
+        get_interval(settings) in (UNSET_INTERVAL, interval)
+    if resolution_matches && interval_matches
+        return get_time_series_values!(
+            IS.get_time_series_type(key),
+            model,
+            component,
+            IS.get_name(key),
+            start_time,
+            len;
+            ignore_scaling_factors = false,
+            interval = interval,
+        )
+    end
+    return _read_cost_time_series_values(component, key, start_time, len)
+end
+
+# Startup and shutdown values are converted by PSY getters, so they are read uncached.
 function handle_variable_cost_parameter(
-    param::Union{StartupCostParameter, ShutdownCostParameter, AbstractCostAtMinParameter},
+    param::Union{StartupCostParameter, ShutdownCostParameter},
     op_cost::PSY.OfferCurveCost,
     component,
     name,
@@ -126,6 +225,7 @@ function handle_variable_cost_parameter(
     container,
     initial_forecast_time,
     horizon,
+    model::DecisionModel,
 )
     is_time_variant(_get_parameter_field(param, op_cost)) || return
     ts_vector = _get_parameter_field(param, component, op_cost;
@@ -135,6 +235,43 @@ function handle_variable_cost_parameter(
     for (t, value) in enumerate(TimeSeries.values(ts_vector))
         # startup needs Tuple(value), rest just value. (slight type instability)
         _set_param_value!(parameter_array, _maybe_tuple(param, value), name, t)
+        update_variable_cost!(
+            param,
+            container,
+            parameter_array,
+            parameter_multiplier,
+            attributes,
+            component,
+            t,
+        )
+    end
+    return
+end
+
+function handle_variable_cost_parameter(
+    param::AbstractCostAtMinParameter,
+    op_cost::PSY.OfferCurveCost,
+    component,
+    name,
+    parameter_array,
+    parameter_multiplier,
+    attributes,
+    container,
+    initial_forecast_time,
+    horizon,
+    model::DecisionModel,
+)
+    key = _get_parameter_field(param, op_cost)
+    is_time_variant(key) || return
+    values = _get_cost_time_series_values!(
+        model,
+        component,
+        key,
+        initial_forecast_time,
+        horizon,
+    )
+    for (t, value) in enumerate(values)
+        _set_param_value!(parameter_array, value, name, t)
         update_variable_cost!(
             param,
             container,
@@ -159,14 +296,18 @@ function handle_variable_cost_parameter(
     container,
     initial_forecast_time,
     horizon,
+    model::DecisionModel,
 ) where {T <: AbstractPiecewiseLinearSlopeParameter}
-    is_time_variant(_get_parameter_field(slope_param, op_cost)) || return
-    ts_vector = _get_parameter_field(slope_param,
-        component, op_cost;
-        start_time = initial_forecast_time,
-        len = horizon,
+    key = _get_parameter_field(slope_param, op_cost)
+    is_time_variant(key) || return
+    values = _get_cost_time_series_values!(
+        model,
+        component,
+        key,
+        initial_forecast_time,
+        horizon,
     )
-    for (t, value::PSY.PiecewiseStepData) in enumerate(TimeSeries.values(ts_vector))
+    for (t, value::PSY.PiecewiseStepData) in enumerate(values)
         unwrapped_value =
             _unwrap_for_param(T(), value, lookup_additional_axes(parameter_array))
         _set_param_value!(parameter_array, unwrapped_value, name, t)

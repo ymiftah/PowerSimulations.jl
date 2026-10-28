@@ -1099,3 +1099,159 @@ end
 
     @test isapprox(sum(p_var[!, "Alta"][15:24]), 0.0, atol = 1e-4)
 end
+
+# The shared MBC system has two forecast windows, one fewer than the simulation below
+# needs. Forecast window counts must agree across the system, so the load forecast is
+# extended by one window, then the MBC cost-at-min and offer curves get three windows.
+function _build_sys_incr_three_windows()
+    sys = load_sys_incr()
+    load = get_component(PowerLoad, sys, "Bus1")
+    old_load_ts = get_time_series(Deterministic, load, "max_active_power")
+    old_windows = collect(old_load_ts.data)
+    last_init, last_vals = old_windows[end]
+    load_data = OrderedDict(
+        old_windows...,
+        (last_init + old_load_ts.interval) => last_vals,
+    )
+    remove_time_series!(sys, Deterministic, load, "max_active_power")
+    add_time_series!(
+        sys,
+        load,
+        Deterministic(;
+            name = "max_active_power",
+            data = load_data,
+            resolution = old_load_ts.resolution,
+            interval = old_load_ts.interval,
+        ),
+    )
+    comp = get_component(ThermalStandard, sys, "Test Unit1")
+    op_cost = get_operation_cost(comp)
+    baseline = get_value_curve(get_incremental_offer_curves(op_cost))
+    baseline_pwl = get_function_data(baseline)
+    min_power = first(get_x_coords(baseline_pwl))
+    init_time = first(PSY.get_forecast_initial_times(sys))
+    horizon = PSY.get_forecast_horizon(sys)
+    interval = PSY.get_forecast_interval(sys)
+    resolution = first(PSY.get_time_series_resolutions(sys))
+    window_count = 3
+    initial_ts = make_deterministic_ts(
+        "initial_input incremental",
+        get_initial_input(baseline),
+        0.11,
+        0.05,
+        init_time,
+        horizon,
+        interval,
+        window_count,
+        resolution,
+    )
+    pwl_ts = make_deterministic_ts(
+        "variable_cost incremental",
+        baseline_pwl,
+        (0.02, 0.07, 0.03),
+        (0.02, 0.07, 0.03),
+        init_time,
+        horizon,
+        interval,
+        window_count,
+        resolution;
+        override_min_x = min_power,
+    )
+    initial_key = add_time_series!(sys, comp, initial_ts)
+    curve_key = add_time_series!(sys, comp, pwl_ts)
+    set_incremental_initial_input!(op_cost, initial_key)
+    set_incremental_offer_curves!(op_cost, curve_key)
+    return sys
+end
+
+# Runs a three-step simulation of the time-varying MarketBidCost system and returns the
+# per-step objective values and the read-back slope and cost-at-min parameters.
+function _run_mbc_offer_curve_sim(; steps = 3, model_kwargs...)
+    sys = _build_sys_incr_three_windows()
+    template = ProblemTemplate(
+        NetworkModel(CopperPlatePowerModel; duals = [CopperPlateBalanceConstraint]),
+    )
+    set_formulations!(template, sys, FormulationDict())
+    model = DecisionModel(
+        template,
+        sys;
+        name = "UC",
+        store_variable_names = true,
+        optimizer = HiGHS_optimizer_small_gap,
+        model_kwargs...,
+    )
+    models = SimulationModels(; decision_models = [model])
+    sequence = SimulationSequence(;
+        models = models,
+        feedforwards = Dict(),
+        ini_cond_chronology = InterProblemChronology(),
+    )
+    sim = Simulation(;
+        name = "mbc_offer_curve_cache",
+        steps = steps,
+        models = models,
+        sequence = sequence,
+        initial_time = TIME1,
+        simulation_folder = mktempdir(),
+    )
+    @test build!(sim) == PSI.SimulationBuildStatus.BUILT
+    @test execute!(sim; in_memory = true) == PSI.RunStatus.SUCCESSFULLY_FINALIZED
+    res = get_decision_problem_results(SimulationResults(sim), "UC")
+    objectives = PSI.read_optimizer_stats(res)[!, "objective_value"]
+    slopes =
+        read_parameter_dict(
+            res,
+            PSI.IncrementalPiecewiseLinearSlopeParameter,
+            ThermalStandard,
+        )
+    cost_at_min =
+        read_parameter_dict(res, PSI.IncrementalCostAtMinParameter, ThermalStandard)
+    return objectives, slopes, cost_at_min
+end
+
+@testset "Time-varying MarketBidCost offer curves read through the time series cache" begin
+    cached = _run_mbc_offer_curve_sim()
+    uncached = _run_mbc_offer_curve_sim(; time_series_cache_size = 0)
+    @test length(cached[1]) == 3
+    @test cached[1] == uncached[1]
+    @test cached[2] == uncached[2]
+    @test cached[3] == uncached[3]
+
+    # One update on a freshly built model must leave the offer-curve series in the model
+    # cache, which only the cached read path does.
+    sys = _build_sys_incr_three_windows()
+    template = ProblemTemplate(
+        NetworkModel(CopperPlatePowerModel; duals = [CopperPlateBalanceConstraint]),
+    )
+    set_formulations!(template, sys, FormulationDict())
+    model = DecisionModel(
+        template,
+        sys;
+        name = "UC",
+        store_variable_names = true,
+        optimizer = HiGHS_optimizer_small_gap,
+        initial_time = TIME1,
+    )
+    @test build!(model; output_dir = test_path) == PSI.ModelBuildStatus.BUILT
+    container = PSI.get_optimization_container(model)
+    # Mirrors the start of a simulation update, which unsynchronizes the cost objective.
+    PSI.cost_function_unsynch(container)
+    dataset = PSI.DatasetContainer{PSI.InMemoryDataset}()
+    for key in keys(PSI.get_parameters(model))
+        key isa PSI.ParameterKey{
+            <:Union{
+                PSI.IncrementalPiecewiseLinearSlopeParameter,
+                PSI.IncrementalCostAtMinParameter,
+            },
+            ThermalStandard,
+        } || continue
+        PSI.update_container_parameter_values!(container, model, key, dataset)
+    end
+    comp = get_component(ThermalStandard, sys, "Test Unit1")
+    offer_name =
+        IS.get_name(PSY.get_incremental_offer_curves(PSY.get_operation_cost(comp)))
+    @test any(
+        k -> k isa IS.TimeSeriesCacheKey && k.name == offer_name,
+        keys(PSI.get_time_series_cache(model)),
+    )
+end
