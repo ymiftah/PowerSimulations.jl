@@ -572,6 +572,13 @@ ConstraintCoefficientParameter
 add_coefficient_target!
 ```
 
+### Time-Series Cost Parameters
+
+```@docs
+TimeSeriesCostParameter
+add_cost_target!
+```
+
 ### Objective Function Parameters
 
 ```@docs

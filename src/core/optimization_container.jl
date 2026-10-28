@@ -19,11 +19,15 @@ mutable struct ObjectiveFunction
     variant_terms::GAE
     synchronized::Bool
     sense::MOI.OptimizationSense
+    # Sticky: set once a time-varying cost can contribute variant terms, so the objective is
+    # resynchronized even after a step whose contributions are all zero.
+    has_variant_contributors::Bool
     function ObjectiveFunction(invariant_terms::JuMP.AbstractJuMPScalar,
         variant_terms::GAE,
         synchronized::Bool,
-        sense::MOI.OptimizationSense = MOI.MIN_SENSE)
-        new(invariant_terms, variant_terms, synchronized, sense)
+        sense::MOI.OptimizationSense = MOI.MIN_SENSE,
+        has_variant_contributors::Bool = false)
+        new(invariant_terms, variant_terms, synchronized, sense, has_variant_contributors)
     end
 end
 
@@ -50,6 +54,10 @@ is_synchronized(v::ObjectiveFunction) = v.synchronized
 set_synchronized_status!(v::ObjectiveFunction, value) = v.synchronized = value
 reset_variant_terms(v::ObjectiveFunction) = v.variant_terms = zero(JuMP.AffExpr)
 has_variant_terms(v::ObjectiveFunction) = !iszero(v.variant_terms)
+function set_has_variant_contributors!(v::ObjectiveFunction)
+    v.has_variant_contributors = true
+    return
+end
 set_sense!(v::ObjectiveFunction, sense::MOI.OptimizationSense) = v.sense = sense
 
 function ObjectiveFunction()
@@ -148,7 +156,8 @@ get_constraints(container::OptimizationContainer) = container.constraints
 
 function cost_function_unsynch(container::OptimizationContainer)
     obj_func = get_objective_expression(container)
-    if has_variant_terms(obj_func) && is_synchronized(container)
+    if (has_variant_terms(obj_func) || obj_func.has_variant_contributors) &&
+       is_synchronized(container)
         set_synchronized_status!(obj_func, false)
         reset_variant_terms(obj_func)
     end
@@ -1262,6 +1271,12 @@ _time_series_parameter_eltype(
     ::Type{<:ConstraintCoefficientParameter},
 ) = Float64
 
+# Cost parameters are applied as objective coefficients, never as JuMP parameters.
+_time_series_parameter_eltype(
+    ::OptimizationContainer,
+    ::Type{<:TimeSeriesCostParameter},
+) = Float64
+
 function _add_param_container!(
     container::OptimizationContainer,
     key::ParameterKey{T, U},
@@ -1372,6 +1387,7 @@ function _add_param_container!(
     axs...;
     sparse = false,
 ) where {R, T <: ObjectiveFunctionParameter, U <: PSY.Component}
+    set_has_variant_contributors!(container.objective_function)
     if sparse
         param_array = sparse_container_spec(R, axs...)
         multiplier_array = sparse_container_spec(Float64, axs...)
@@ -1395,6 +1411,7 @@ function _add_param_container!(
     sparse = false,
 ) where {T <: ObjectiveFunctionParameter, U <: PSY.Component, V <: Float64}
     param_type = Float64
+    set_has_variant_contributors!(container.objective_function)
     if sparse
         param_array =
             sparse_container_spec(param_type, multiplier_axs, additional_axs..., time_steps)
@@ -1890,7 +1907,23 @@ function add_to_objective_variant_expression!(
     container::OptimizationContainer,
     cost_expr::JuMP.AffExpr,
 )
+    set_has_variant_contributors!(container.objective_function)
     JuMP.add_to_expression!(container.objective_function.variant_terms, cost_expr)
+    return
+end
+
+# Adds `coefficient * variable` without allocating an intermediate expression.
+function add_to_objective_variant_expression!(
+    container::OptimizationContainer,
+    coefficient::Float64,
+    variable::JuMP.VariableRef,
+)
+    set_has_variant_contributors!(container.objective_function)
+    JuMP.add_to_expression!(
+        container.objective_function.variant_terms,
+        coefficient,
+        variable,
+    )
     return
 end
 
