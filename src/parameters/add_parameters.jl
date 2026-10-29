@@ -15,6 +15,55 @@ function add_parameters!(
     return
 end
 
+"""
+    add_parameters!(container, T, devices, model; meta, time_series_name)
+
+Add the time-series parameter `T` for `devices` under the device model `model`. The series
+is `time_series_name` when given, otherwise the one in `get_time_series_names(model)[T]`.
+Stock constructors look parameters up with the empty meta, so a parameter keyed by `meta`
+is only visible to code that passes the same meta. No container is created when no device
+carries the series. This keyword path covers device parameters only: branch parameters
+added through `add_branch_parameters!` ignore `meta` and `time_series_name`.
+
+# Arguments
+
+  - `container::OptimizationContainer`: container receiving the parameter.
+  - `T::Type{<:TimeSeriesParameter}`: parameter type.
+  - `devices`: devices the parameter is added for.
+  - `model::DeviceModel`: device model supplying the default series name.
+
+# Keyword Arguments
+
+  - `meta::String`: container key meta; defaults to the empty meta.
+  - `time_series_name::Union{Nothing, String}`: series name; defaults to the model's name.
+"""
+function add_parameters!(
+    container::OptimizationContainer,
+    ::Type{T},
+    devices::U,
+    model::DeviceModel{D, W};
+    meta::String = ISOPT.CONTAINER_KEY_EMPTY_META,
+    time_series_name::Union{Nothing, String} = nothing,
+) where {
+    T <: TimeSeriesParameter,
+    U <: Union{Vector{D}, IS.FlattenIteratorWrapper{D}},
+    W <: AbstractDeviceFormulation,
+} where {D <: PSY.Component}
+    if get_rebuild_model(get_settings(container)) &&
+       has_container_key(container, T, D, meta)
+        return
+    end
+    _add_parameters!(
+        container,
+        T(),
+        devices,
+        model;
+        meta = meta,
+        time_series_name = time_series_name,
+    )
+    return
+end
+
 function add_branch_parameters!(
     container::OptimizationContainer,
     ::Type{T},
@@ -204,13 +253,22 @@ function _add_parameters!(
     container::OptimizationContainer,
     param::T,
     devices::U,
-    model::DeviceModel{D, W},
+    model::DeviceModel{D, W};
+    meta::String = ISOPT.CONTAINER_KEY_EMPTY_META,
+    time_series_name::Union{Nothing, String} = nothing,
 ) where {
     T <: TimeSeriesParameter,
     U <: Union{Vector{D}, IS.FlattenIteratorWrapper{D}},
     W <: AbstractDeviceFormulation,
 } where {D <: PSY.Component}
-    _add_time_series_parameters!(container, param, devices, model)
+    _add_time_series_parameters!(
+        container,
+        param,
+        devices,
+        model;
+        meta = meta,
+        time_series_name = time_series_name,
+    )
     return
 end
 
@@ -379,7 +437,9 @@ function _add_time_series_parameters!(
     container::OptimizationContainer,
     param::T,
     devices,
-    model::DeviceModel{D, W},
+    model::DeviceModel{D, W};
+    meta::String = ISOPT.CONTAINER_KEY_EMPTY_META,
+    time_series_name::Union{Nothing, String} = nothing,
 ) where {D <: PSY.Component, T <: TimeSeriesParameter, W <: AbstractDeviceFormulation}
     ts_type = get_default_time_series_type(container)
     if !(ts_type <: Union{PSY.AbstractDeterministic, PSY.StaticTimeSeries})
@@ -388,7 +448,11 @@ function _add_time_series_parameters!(
 
     time_steps = get_time_steps(container)
     # TODO: Temporary workaround to get the name where we assume all the names are the same accross devices.
-    ts_name = _get_time_series_name(T(), first(devices), model)
+    ts_name = if isnothing(time_series_name)
+        _get_time_series_name(T(), first(devices), model)
+    else
+        time_series_name
+    end
 
     device_names = String[]
     devices_with_time_series = D[]
@@ -468,7 +532,8 @@ function _add_time_series_parameters!(
         collect(keys(initial_values)),
         device_names,
         additional_axes,
-        time_steps,
+        time_steps;
+        meta = meta,
     )
     set_subsystem!(get_attributes(param_container), get_subsystem(model))
 
