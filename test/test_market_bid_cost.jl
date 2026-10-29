@@ -1287,11 +1287,14 @@ end
 
 # SingleTimeSeries offer curves are stored as PiecewiseStepData, with a Float64 cost-at-min
 # series whose scaling factor multiplier is not the identity.
+# `extra_unit` adds a second thermal unit: `:missing` gives it a MarketBidCost without energy
+# offer curves, `:zero` gives it a zero-cost incremental curve.
 function _build_sys_static_mbc(;
     horizon::Int,
     interval::Int,
     steps::Int = 3,
     features::NamedTuple = NamedTuple(),
+    extra_unit::Union{Nothing, Symbol} = nothing,
 )
     rows = (steps - 1) * interval + horizon
     timestamps = range(TIME1; step = Hour(1), length = rows)
@@ -1367,7 +1370,42 @@ function _build_sys_static_mbc(;
         load,
         PSY.SingleTimeSeries("max_active_power", TimeArray(timestamps, fill(0.5, rows))),
     )
+    isnothing(extra_unit) || _add_extra_mbc_unit!(sys, bus, extra_unit)
     return sys
+end
+
+function _add_extra_mbc_unit!(sys::PSY.System, bus::PSY.ACBus, offers::Symbol)
+    offers in (:missing, :zero) || error("Unknown extra unit offers $offers")
+    incremental = if offers == :zero
+        CostCurve(PiecewiseIncrementalCurve(0.0, [0.0, 100.0, 200.0], [0.0, 0.0]))
+    else
+        nothing
+    end
+    mbc = MarketBidCost(;
+        no_load_cost = 0.0,
+        start_up = (hot = 0.0, warm = 0.0, cold = 0.0),
+        shut_down = 0.0,
+        incremental_offer_curves = incremental,
+        decremental_offer_curves = nothing,
+    )
+    gen = PSY.ThermalStandard(;
+        name = "Energy-less Unit",
+        available = true,
+        status = true,
+        bus = bus,
+        active_power = 0.0,
+        reactive_power = 0.0,
+        rating = 2.0,
+        active_power_limits = (min = 0.0, max = 2.0),
+        reactive_power_limits = nothing,
+        ramp_limits = nothing,
+        operation_cost = mbc,
+        base_power = 100.0,
+        prime_mover_type = PSY.PrimeMovers.ST,
+        fuel = PSY.ThermalFuels.COAL,
+    )
+    PSY.add_component!(sys, gen)
+    return gen
 end
 
 @testset "SingleTimeSeries MarketBidCost offer curves read through the static cache" begin
@@ -1474,5 +1512,30 @@ end
         values = PSI.get_parameter_array(PSI.get_optimization_container(model), key)
         @test [values["Test Unit1", t] for t in 1:2] == expected
         @test IS._get_ignore_scaling_factors(cache[unscaled_key])
+    end
+end
+
+@testset "MarketBidCost without energy offer curves" begin
+    build_sys(extra) = _build_sys_static_mbc(;
+        horizon = 2, interval = 2, extra_unit = extra)
+    function single_problem_objective(sys::PSY.System)
+        model = _build_standalone_mbc_model(sys; horizon = Hour(2), interval = Hour(2))
+        @test solve!(model) == PSI.RunStatus.SUCCESSFULLY_FINALIZED
+        res = OptimizationProblemResults(model)
+        return only(PSI.read_optimizer_stats(res)[!, "objective_value"])
+    end
+
+    @testset "Single problem: energy-less unit adds no energy cost" begin
+        energy_less = single_problem_objective(build_sys(:missing))
+        zero_cost = single_problem_objective(build_sys(:zero))
+        @test isapprox(energy_less, zero_cost; atol = 1e-6)
+    end
+
+    @testset "Simulation: energy-less unit adds no energy cost" begin
+        sim_kwargs = (steps = 2, horizon = Hour(2), interval = Hour(2))
+        energy_less = _run_mbc_offer_curve_sim(build_sys(:missing); sim_kwargs...)
+        zero_cost = _run_mbc_offer_curve_sim(build_sys(:zero); sim_kwargs...)
+        @test length(energy_less[1]) == 2
+        @test isapprox(energy_less[1], zero_cost[1]; atol = 1e-6)
     end
 end
