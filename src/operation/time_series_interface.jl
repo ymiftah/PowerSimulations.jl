@@ -106,8 +106,8 @@ function get_time_series_values!(
     return TimeSeries.values(ts)
 end
 
-# Metadata is resolved once per key and model build; the system's time series do not
-# change while a model is built.
+# Metadata is resolved once per key and container, and cleared on container reset.
+# Time series must not be replaced after build.
 function _get_time_series_metadata!(
     model::OperationModel,
     key::IS.TimeSeriesCacheKey,

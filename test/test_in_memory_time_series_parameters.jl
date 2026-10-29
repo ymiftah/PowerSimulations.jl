@@ -201,6 +201,9 @@ end
     @test length(cache) == 2
     gen_none = PSY.get_component(PSY.ThermalStandard, sys, "gen_none")
     @test all(k -> k.component_uuid != IS.get_uuid(gen_none), keys(cache))
+    # A rebuild on the same container must not reuse metadata from the previous build.
+    PSI.reset_optimization_model!(PSI.get_optimization_container(model))
+    @test isempty(cache)
 end
 
 @testset "In-memory time-series parameters update every step (DeterministicSingleTimeSeries)" begin
@@ -260,5 +263,78 @@ end
         # Stored results are in natural units.
         @test values[values.name .== name, :value] ==
               expected .* multipliers[name, 1] .* PSY.get_base_power(sys)
+    end
+end
+
+@testset "Reduced branch rating on EmulationModel reads the parallel line that owns the series" begin
+    # The series sits on one of two parallel lines; the other line is registered through the
+    # reduction entry and must take its values from the owner. Both lines are tried as owner.
+    for series_on_copy in (false, true)
+        sys = PSB.build_system(
+            PSITestSystems,
+            "c_sys5";
+            time_series_in_memory = true,
+            force_build = true,
+        )
+        line_names_before = Set(PSY.get_name.(PSY.get_components(PSY.Line, sys)))
+        add_equivalent_ac_transmission_with_parallel_circuits!(
+            sys,
+            PSY.get_component(PSY.Line, sys, "1"),
+            PSY.Line,
+        )
+        copy_name = only(
+            setdiff(PSY.get_name.(PSY.get_components(PSY.Line, sys)), line_names_before),
+        )
+        owner_name = series_on_copy ? copy_name : "1"
+        owner = PSY.get_component(PSY.Line, sys, owner_name)
+        executions = 3
+        timestamps = range(IN_MEMORY_TEST_START; step = Hour(1), length = 4)
+        ts = PSY.SingleTimeSeries(
+            "branch_rating",
+            TimeArray(timestamps, [0.9, 0.8, 1.0, 0.7]);
+            scaling_factor_multiplier = PSY.get_rating,
+        )
+        PSY.add_time_series!(sys, owner, ts)
+
+        template = ProblemTemplate(
+            NetworkModel(PTDFPowerModel; PTDF_matrix = PTDF(sys)),
+        )
+        set_device_model!(template, DeviceModel(ThermalStandard, ThermalBasicDispatch))
+        set_device_model!(
+            template,
+            DeviceModel(
+                Line,
+                StaticBranch;
+                time_series_names = Dict(
+                    BranchRatingTimeSeriesParameter => "branch_rating",
+                ),
+            ),
+        )
+        model = EmulationModel(template, sys; optimizer = HiGHS_optimizer)
+        @test build!(
+            model;
+            executions = executions,
+            output_dir = mktempdir(; cleanup = true),
+        ) == PSI.ModelBuildStatus.BUILT
+        @test run!(model) == PSI.RunStatus.SUCCESSFULLY_FINALIZED
+
+        container = PSI.get_optimization_container(model)
+        key = PSI.ParameterKey(BranchRatingTimeSeriesParameter, Line)
+        multipliers = PSI.get_multiplier_array(PSI.get_parameter(container, key))
+        values = read_parameter(OptimizationProblemResults(model), key)
+        initial_time = PSI.get_initial_time(model)
+        expected = PSY.get_time_series_values(
+            PSY.SingleTimeSeries,
+            owner,
+            "branch_rating";
+            start_time = initial_time,
+            len = executions,
+            ignore_scaling_factors = true,
+        )
+        # The parallel pair shares one reduced row, named after the reduction entry.
+        reduced_name = only(axes(multipliers)[1])
+        # Stored results are in natural units.
+        @test values[values.name .== reduced_name, :value] ==
+              expected .* multipliers[reduced_name, 1] .* PSY.get_base_power(sys)
     end
 end
