@@ -201,6 +201,9 @@ end
     @test length(cache) == 2
     gen_none = PSY.get_component(PSY.ThermalStandard, sys, "gen_none")
     @test all(k -> k.component_uuid != IS.get_uuid(gen_none), keys(cache))
+    # A rebuild on the same container must not reuse metadata from the previous build.
+    PSI.reset_optimization_model!(PSI.get_optimization_container(model))
+    @test isempty(cache)
 end
 
 @testset "In-memory time-series parameters update every step (DeterministicSingleTimeSeries)" begin

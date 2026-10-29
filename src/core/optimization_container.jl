@@ -401,6 +401,7 @@ function reset_optimization_model!(container::OptimizationContainer)
     container.initial_conditions_data = InitialConditionsData()
     container.objective_function = ObjectiveFunction()
     container.primal_values_cache = PrimalValuesCache()
+    empty!(get_time_series_metadata_cache(container))
     JuMP.empty!(PSI.get_jump_model(container))
     return
 end
