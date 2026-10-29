@@ -101,6 +101,7 @@ mutable struct OptimizationContainer <: ISOPT.AbstractOptimizationContainer
     default_time_series_type::Type{<:PSY.TimeSeriesData}
     power_flow_evaluation_data::Vector{PowerFlowEvaluationData}
     milp_state::MILPState
+    time_series_metadata_cache::Dict{IS.TimeSeriesCacheKey, IS.TimeSeriesMetadata}
 end
 
 function OptimizationContainer(
@@ -144,6 +145,7 @@ function OptimizationContainer(
         T,
         Vector{PowerFlowEvaluationData}[],
         MILPState(),
+        Dict{IS.TimeSeriesCacheKey, IS.TimeSeriesMetadata}(),
     )
 end
 
@@ -186,6 +188,8 @@ get_power_flow_evaluation_data(container::OptimizationContainer) =
     container.power_flow_evaluation_data
 get_resolution(container::OptimizationContainer) = get_resolution(container.settings)
 get_settings(container::OptimizationContainer) = container.settings
+get_time_series_metadata_cache(container::OptimizationContainer) =
+    container.time_series_metadata_cache
 get_time_steps(container::OptimizationContainer) = container.time_steps
 get_variables(container::OptimizationContainer) = container.variables
 
@@ -397,6 +401,7 @@ function reset_optimization_model!(container::OptimizationContainer)
     container.initial_conditions_data = InitialConditionsData()
     container.objective_function = ObjectiveFunction()
     container.primal_values_cache = PrimalValuesCache()
+    empty!(get_time_series_metadata_cache(container))
     JuMP.empty!(PSI.get_jump_model(container))
     return
 end
