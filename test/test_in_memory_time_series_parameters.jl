@@ -196,6 +196,11 @@ end
         "TestInMemorySubsetParameter__ThermalStandard__subset",
         ["gen_a"],
     )
+    # One metadata entry per device with the series, shared by both parameters.
+    cache = PSI.get_time_series_metadata_cache(PSI.get_optimization_container(model))
+    @test length(cache) == 2
+    gen_none = PSY.get_component(PSY.ThermalStandard, sys, "gen_none")
+    @test all(k -> k.component_uuid != IS.get_uuid(gen_none), keys(cache))
 end
 
 @testset "In-memory time-series parameters update every step (DeterministicSingleTimeSeries)" begin
