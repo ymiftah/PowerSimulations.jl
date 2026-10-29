@@ -55,12 +55,14 @@ function Base.empty!(cache::OptimizationOutputCache)
 end
 
 """
-Add result to the cache.
+Add result to the cache. Returns the change in `get_size(cache)`, which is negative when an
+entry is evicted to make room.
 """
 function add_result!(cache::OptimizationOutputCache,
     timestamp::Dates.DateTime,
     array::Array{Float64},
     system_cache_is_full::Bool)
+    size_before = get_size(cache)
     if cache.size_per_entry == 0
         cache.size_per_entry = length(array) * sizeof(first(array))
     end
@@ -82,7 +84,7 @@ function add_result!(cache::OptimizationOutputCache,
     end
 
     _add_result!(cache, timestamp, array)
-    return cache.size_per_entry
+    return get_size(cache) - size_before
 end
 
 function _add_result!(
@@ -95,13 +97,18 @@ function _add_result!(
     return
 end
 
+"""
+Remove the entries at `timestamps`. Returns the change in `get_size(cache)`, which is
+non-positive.
+"""
 function discard_results!(cache::OptimizationOutputCache, timestamps)
+    size_before = get_size(cache)
     for timestamp in timestamps
         pop!(cache.data, timestamp)
     end
 
     @debug "Removed $(first(timestamps)) - $(last(timestamps)) from cache" cache.key
-    return
+    return get_size(cache) - size_before
 end
 
 """
