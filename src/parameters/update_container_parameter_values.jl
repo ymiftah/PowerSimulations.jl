@@ -262,6 +262,64 @@ function _update_parameter_values!(
     return
 end
 
+# Reduced ACTransmission branches on an EmulationModel: read each parameter row from the
+# reduction member that owns the series, which may be a sibling of the branch.
+function _update_parameter_values!(
+    parameter_array::DenseAxisArray{T},
+    ::ParameterType,
+    attributes::TimeSeriesAttributes{U},
+    ::Type{V},
+    model::EmulationModel,
+    ::DatasetContainer{InMemoryDataset},
+) where {
+    T <: Union{JuMP.VariableRef, Float64},
+    U <: PSY.SingleTimeSeries,
+    V <: PSY.ACTransmission,
+}
+    initial_forecast_time = get_current_time(model)
+    ts_name = get_time_series_name(attributes)
+    ts_resolution = get_resolution(get_settings(model))
+    net_reduction_data = get_network_model(get_template(model)).network_reduction
+    if !haskey(net_reduction_data.name_to_arc_map, V)
+        return
+    end
+    all_branch_maps_by_type = PNM.get_all_branch_maps_by_type(net_reduction_data)
+    parent_param = parameter_array.data
+    name_lookup = parameter_array.lookup[1]
+    ts_uuids_updated = Set{String}()
+    for (name, (arc, reduction)) in PNM.get_name_to_arc_map(net_reduction_data, V)
+        reduction_entry = all_branch_maps_by_type[reduction][V][arc]
+        if !PNM.has_time_series(reduction_entry, U, ts_name)
+            continue
+        end
+        # Components outside the subset passed to add_parameters! are not registered.
+        ts_uuid = get(attributes.component_name_to_ts_uuid, name, nothing)
+        isnothing(ts_uuid) && continue
+        if ts_uuid in ts_uuids_updated
+            continue
+        end
+        device_with_time_series =
+            PNM.get_device_with_time_series(reduction_entry, U, ts_name)
+        value = get_time_series_values!(
+            U,
+            model,
+            device_with_time_series,
+            ts_name,
+            initial_forecast_time;
+            resolution = ts_resolution,
+        )[1]
+        if !isfinite(value)
+            error(
+                "The value for the time series $(ts_name) is not finite. \
+                Check that the data in the time series is valid.",
+            )
+        end
+        _set_param_value_at!(parent_param, value, name_lookup[ts_uuid], 1)
+        push!(ts_uuids_updated, ts_uuid)
+    end
+    return
+end
+
 function _update_parameter_values!(
     parameter_array::DenseAxisArray{T},
     ::ParameterType,
