@@ -24,6 +24,8 @@ Establishes the NetworkModel for a given PowerModels formulation type.
 # Accepted keyword arguments
 - `use_slacks::Bool` = false
     Adds slack buses to the network modeling.
+- `slack_cost::Real` = `BALANCE_SLACK_COST`
+    Objective penalty per unit of network balance slack. Must be a finite, positive real number.
 - `PTDF_matrix::Union{PNM.PowerNetworkMatrix, Nothing}` = nothing
     PTDF/VirtualPTDF matrix produced by PowerNetworkMatrices (optional).
 - `MODF_matrix::Union{PNM.VirtualMODF, Nothing}` = nothing
@@ -54,6 +56,7 @@ nw = NetworkModel(PTDFPowerModel; PTDF_matrix = ptdf, reduce_radial_branches = t
 """
 mutable struct NetworkModel{T <: PM.AbstractPowerModel}
     use_slacks::Bool
+    slack_cost::Float64
     PTDF_matrix::Union{Nothing, PNM.PowerNetworkMatrix}
     MODF_matrix::Union{Nothing, PNM.VirtualMODF}
     subnetworks::Dict{Int, Set{Int}}
@@ -71,6 +74,7 @@ mutable struct NetworkModel{T <: PM.AbstractPowerModel}
     function NetworkModel(
         ::Type{T};
         use_slacks = false,
+        slack_cost = BALANCE_SLACK_COST,
         PTDF_matrix = nothing,
         MODF_matrix = nothing,
         reduce_radial_branches = false,
@@ -83,8 +87,10 @@ mutable struct NetworkModel{T <: PM.AbstractPowerModel}
         hvdc_network_model = nothing,
     ) where {T <: PM.AbstractPowerModel}
         _check_pm_formulation(T)
+        _check_slack_cost(slack_cost)
         new{T}(
             use_slacks,
+            Float64(slack_cost),
             PTDF_matrix,
             MODF_matrix,
             Dict{Int, Set{Int}}(),
@@ -102,7 +108,18 @@ mutable struct NetworkModel{T <: PM.AbstractPowerModel}
     end
 end
 
+function _check_slack_cost(cost)
+    # Bool is a Real subtype, so it is rejected explicitly.
+    if !(cost isa Real) || cost isa Bool || !isfinite(cost) || cost <= 0
+        throw(
+            ArgumentError("slack_cost must be a positive finite real number, got $(cost)"),
+        )
+    end
+    return
+end
+
 get_use_slacks(m::NetworkModel) = m.use_slacks
+get_slack_cost(m::NetworkModel) = m.slack_cost
 get_PTDF_matrix(m::NetworkModel) = m.PTDF_matrix
 get_MODF_matrix(m::NetworkModel) = m.MODF_matrix
 get_reduce_radial_branches(m::NetworkModel) = m.reduce_radial_branches
