@@ -99,6 +99,7 @@ function _run_sim_test(path, sim, variables, model_defs, cache_rules, seed)
                                 1:size(data)[1],
                             ),
                         )
+                        @test PSI.get_size(store.cache) == PSI._compute_size(store.cache)
                         _verify_data(data, store, model, key, model_time, columns)
                     end
 
@@ -118,6 +119,7 @@ function _run_sim_test(path, sim, variables, model_defs, cache_rules, seed)
         end
 
         flush(store)
+        @test PSI.get_size(store.cache) == PSI._compute_size(store.cache)
         @test !has_dirty(store.cache)
     end
 end
@@ -292,6 +294,61 @@ end
     PSI.add_result!(cache, timestamp2, ones(2), false)
     PSI.discard_results!(cache, [timestamp1, timestamp2])
     @test isempty(cache.data)
+end
+
+@testset "Test OptimizationOutputCaches size tracking" begin
+    model = :ED
+    keep_key = PSI.VariableKey(ActivePowerVariable, InterruptiblePowerLoad)
+    drop_key = PSI.VariableKey(ActivePowerVariable, ThermalStandard)
+    cache = PSI.OptimizationOutputCaches()
+    check_size() = @test PSI.get_size(cache) == PSI._compute_size(cache)
+    timestamps = [Dates.DateTime("2020-01-01T0$(i):00:00") for i in 0:3]
+
+    PSI.add_output_cache!(cache, model, keep_key, PSI.CacheFlushRule(true))
+    PSI.add_output_cache!(cache, model, drop_key, PSI.CacheFlushRule(false))
+    check_size()
+    @test PSI.get_size(cache) == 0
+
+    keep_cache = PSI.get_output_cache(cache, model, keep_key)
+    drop_cache = PSI.get_output_cache(cache, model, drop_key)
+
+    # Append results to both caches.
+    for ts in timestamps[1:3]
+        PSI.add_result!(cache, drop_cache, ts, ones(2), false)
+        check_size()
+    end
+    PSI.add_result!(cache, keep_cache, timestamps[1], ones(2), false)
+    check_size()
+    @test PSI.get_size(cache) == 4 * 16
+
+    # Flush: mark dirty entries clean without discarding them.
+    PSI.get_dirty_data_to_flush!(keep_cache)
+    check_size()
+    @test PSI.get_size(cache) == 4 * 16
+
+    # Discard flushed entries from the non-kept cache.
+    PSI.get_dirty_data_to_flush!(drop_cache)
+    PSI.discard_results!(cache, drop_cache, timestamps[1:2])
+    check_size()
+    @test PSI.get_size(cache) == 2 * 16
+
+    # Eviction from the kept cache when the system cache is full: one entry out, one in.
+    PSI.add_result!(cache, keep_cache, timestamps[2], ones(2), true)
+    check_size()
+    @test PSI.get_size(cache) == 2 * 16
+
+    # Replacing a cache under an existing key drops the old cache's bytes.
+    PSI.add_output_cache!(cache, model, drop_key, PSI.CacheFlushRule(false))
+    check_size()
+    @test PSI.get_size(cache) == 16
+
+    # Emptying requires all data to be flushed first.
+    for output_cache in (keep_cache, PSI.get_output_cache(cache, model, drop_key))
+        PSI.has_dirty(output_cache) && PSI.get_dirty_data_to_flush!(output_cache)
+    end
+    empty!(cache)
+    check_size()
+    @test PSI.get_size(cache) == 0
 end
 
 # TODO: test optimizer stats

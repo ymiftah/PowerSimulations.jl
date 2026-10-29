@@ -145,7 +145,7 @@ get_params(store::HdfSimulationStore) = store.params
 function set_cache_flush_rules!(store::HdfSimulationStore, flush_rules::CacheFlushRules)
     new_cache = OptimizationOutputCaches(flush_rules)
     for (key, output_cache) in store.cache.data
-        new_cache.data[key] = output_cache
+        _set_output_cache!(new_cache, key, output_cache)
     end
     store.cache = new_cache
     @debug "Updated store cache rules" get_min_flush_size(store.cache) get_max_size(
@@ -620,7 +620,13 @@ function write_result!(
 ) where {N}
     output_cache = get_output_cache(store.cache, model_name, key)
     cur_size = get_size(store.cache)
-    add_result!(output_cache, index, to_matrix(data), is_full(store.cache, cur_size))
+    add_result!(
+        store.cache,
+        output_cache,
+        index,
+        to_matrix(data),
+        is_full(store.cache, cur_size),
+    )
 
     if get_dirty_size(output_cache) >= get_min_flush_size(store.cache)
         discard = !should_keep_in_cache(output_cache)
@@ -656,6 +662,7 @@ function write_result!(
     cur_size = get_size(store.cache)
 
     add_result!(
+        store.cache,
         output_cache,
         index,
         permutedims(data.data, (3, 1, 2)),
@@ -698,7 +705,13 @@ function write_result!(
 )
     output_cache = get_output_cache(store.cache, model_name, key)
     cur_size = get_size(store.cache)
-    add_result!(output_cache, index, to_matrix(data), is_full(store.cache, cur_size))
+    add_result!(
+        store.cache,
+        output_cache,
+        index,
+        to_matrix(data),
+        is_full(store.cache, cur_size),
+    )
 
     if get_dirty_size(output_cache) >= get_min_flush_size(store.cache)
         discard = !should_keep_in_cache(output_cache)
@@ -1035,7 +1048,7 @@ function _flush_data!(
     _write_dataset!(dataset.values, data, write_range)
     #end
 
-    discard && discard_results!(cache, timestamps)
+    discard && discard_results!(store.cache, cache, timestamps)
 
     dataset.write_index += num_results
     size_flushed = cache.size_per_entry * num_results
