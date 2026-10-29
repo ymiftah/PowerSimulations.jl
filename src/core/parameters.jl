@@ -13,12 +13,22 @@ struct CoefficientTarget
     time_step::Int
 end
 
+# Linear objective term `scale * value * multiplier * variable`, with `value` and `multiplier`
+# read at the linear indices `param_index` and `multiplier_index` of the parent arrays.
+struct CostTarget
+    variable::JuMP.VariableRef
+    scale::Float64
+    param_index::Int
+    multiplier_index::Int
+end
+
 struct TimeSeriesAttributes{T <: PSY.TimeSeriesData} <: ParameterAttributes
     name::String
     multiplier_id::Base.RefValue{Int}
     component_name_to_ts_uuid::Dict{String, String}
     subsystem::Base.RefValue{String}
     coefficient_targets::Vector{CoefficientTarget}
+    cost_targets::Vector{CostTarget}
 end
 
 function TimeSeriesAttributes(
@@ -33,10 +43,12 @@ function TimeSeriesAttributes(
         component_name_to_ts_uuid,
         Base.RefValue{String}(""),
         CoefficientTarget[],
+        CostTarget[],
     )
 end
 
 get_coefficient_targets(attr::TimeSeriesAttributes) = attr.coefficient_targets
+get_cost_targets(attr::TimeSeriesAttributes) = attr.cost_targets
 
 get_time_series_type(::TimeSeriesAttributes{T}) where {T <: PSY.TimeSeriesData} = T
 get_time_series_name(attr::TimeSeriesAttributes) = attr.name
@@ -534,6 +546,15 @@ with [`add_coefficient_target!`](@ref); simulation updates rewrite the registere
 with `JuMP.set_normalized_coefficient`.
 """
 abstract type ConstraintCoefficientParameter <: TimeSeriesParameter end
+
+"""
+Time-series parameter whose values are linear objective coefficients; see `add_cost_target!`.
+
+Values are stored as `Float64` in every build mode and are never JuMP parameters. They are
+written to results as value times multiplier, without the `scale` of each target. Not
+supported for models built with `rebuild_model = true`.
+"""
+abstract type TimeSeriesCostParameter <: TimeSeriesParameter end
 
 abstract type VariableValueParameter <: RightHandSideParameter end
 
