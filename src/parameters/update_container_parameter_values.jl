@@ -76,10 +76,8 @@ function _update_parameter_values!(
     additional_axes = lookup_additional_axes(parameter_array)
     ts_uuids = Set{String}()
     for component in components
-        if !PSY.has_time_series(component, U, ts_name)
-            continue
-        end
-        # Components outside the subset passed to add_parameters! are not registered.
+        # Only components that had the series at build are registered, so unregistered
+        # components (without the series, or outside the subset) are skipped.
         ts_uuid =
             get(attributes.component_name_to_ts_uuid, PSY.get_name(component), nothing)
         isnothing(ts_uuid) && continue
@@ -239,9 +237,7 @@ function _update_parameter_values!(
     name_lookup = parameter_array.lookup[1]
     ts_uuids = Set{String}()
     for component in components
-        if !PSY.has_time_series(component, U, ts_name)
-            continue
-        end
+        # Only components that had the series at build are registered.
         ts_uuid =
             get(attributes.component_name_to_ts_uuid, PSY.get_name(component), nothing)
         isnothing(ts_uuid) && continue
