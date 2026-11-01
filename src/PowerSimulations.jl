@@ -415,6 +415,7 @@ export FixValueParameter
 # Constraint Coefficient Parameters
 export ConstraintCoefficientParameter
 export add_coefficient_target!
+export add_constraint_coefficients!
 
 # Event Parameters
 export AvailableStatusParameter

@@ -567,8 +567,43 @@ FixValueParameter
 
 ### Constraint Coefficient Parameters
 
+Coefficient parameters use the ordinary `time_series_names` configuration. In
+`ArgumentConstructStage`, call `add_parameters!` to create numeric parameter data.
+No constraints or targets are needed at this stage, including in recurrent models.
+
+In `ModelConstructStage`, the formulation's `add_constraints!` method creates and
+stores constraint rows with static terms and a placeholder coefficient, then binds
+that coefficient:
+
+```julia
+add_constraint_coefficients!(
+    container, LossConstraint, FlowVariable, LossFactorParameter, devices, model;
+    scale = -1.0,
+)
+```
+
+Binding immediately replaces the **complete normalized coefficient** with
+`Float64(scale) * parameter_value * parameter_multiplier`. Simulation parameter
+updates refresh the numeric data and apply these bindings automatically before
+solving. Zero removes the coefficient. Other terms in the row are unchanged.
+Only one binding may own a constraint-variable pair, even across parameter keys.
+
+The convenience API requires matching `(component, time)` indices in the constraint
+and variable containers. Parameter rows are resolved through the component's
+time-series UUID; components sharing data retain their individual multipliers.
+Use `constraint_meta`, `variable_meta`, and `parameter_meta` to select containers
+independently. Missing selected cells are errors, and the entire binding batch is
+validated before registration or coefficient modification.
+
+For a `ServiceModel`, pass the specific service in place of `devices`. Its parameter
+metadata defaults to the service name, as in `add_parameters!`; constraints and
+variables must both be indexed by that service and time. Contributing-device
+variables with different axes require explicit `add_coefficient_target!` calls,
+as do other irregular mappings. Both APIs reject `rebuild_model = true`.
+
 ```@docs
 ConstraintCoefficientParameter
+add_constraint_coefficients!
 add_coefficient_target!
 ```
 

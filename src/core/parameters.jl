@@ -530,7 +530,8 @@ Abstract type for time series parameters that set the coefficient of a variable 
 constraint instead of a right-hand side.
 
 Values are stored as `Float64` in every build mode. Formulations register each coefficient
-with [`add_coefficient_target!`](@ref); simulation updates rewrite the registered coefficients
+with [`add_constraint_coefficients!`](@ref) during model construction; simulation updates
+rewrite the registered coefficients
 with `JuMP.set_normalized_coefficient`.
 """
 abstract type ConstraintCoefficientParameter <: TimeSeriesParameter end
