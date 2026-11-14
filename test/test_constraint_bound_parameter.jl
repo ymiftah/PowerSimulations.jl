@@ -244,3 +244,17 @@ end
     PSI.update_numerical_bounds(bounds, MOI.Interval(-Inf, 2.0), ("row", 2))
     @test bounds.min == 2.0 && bounds.max == -Inf
 end
+
+@testset "exporting a model with free and one-sided Interval rows" begin
+    model = JuMP.Model()
+    JuMP.@variable(model, x >= 0)
+    JuMP.@constraint(model, 1.0 * x in MOI.Interval(-Inf, Inf))
+    JuMP.@constraint(model, 2.0 * x in MOI.Interval(-Inf, 3.0))
+    JuMP.@constraint(model, 3.0 * x in MOI.Interval(1.0, Inf))
+    JuMP.@constraint(model, 4.0 * x in MOI.Interval(1.0, 5.0))
+    path = joinpath(mktempdir(; cleanup = true), "model.mof.json")
+    PSI.serialize_jump_optimization_model(model, path)
+    @test isfile(path)
+    # The live model keeps all four rows.
+    @test JuMP.num_constraints(model, JuMP.AffExpr, MOI.Interval{Float64}) == 4
+end

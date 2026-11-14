@@ -648,7 +648,28 @@ function _copy_jump_model_for_export(
         end
     dest = MOPFM(; format = file_format)
     MOI.copy_to(dest, JuMP.backend(jump_model))
+    _replace_infinite_intervals!(dest)
     return dest
+end
+
+# The exported formats cannot write an infinite `MOI.Interval` bound. A one-sided interval
+# becomes the matching `LessThan`/`GreaterThan` row and a free row is dropped.
+function _replace_infinite_intervals!(dest)
+    F = MOI.ScalarAffineFunction{Float64}
+    S = MOI.Interval{Float64}
+    (F, S) in MOI.get(dest, MOI.ListOfConstraintTypesPresent()) || return
+    for ci in MOI.get(dest, MOI.ListOfConstraintIndices{F, S}())
+        set = MOI.get(dest, MOI.ConstraintSet(), ci)
+        isinf(set.lower) || isinf(set.upper) || continue
+        func = MOI.get(dest, MOI.ConstraintFunction(), ci)
+        MOI.delete(dest, ci)
+        if isinf(set.lower) && !isinf(set.upper)
+            MOI.add_constraint(dest, func, MOI.LessThan(set.upper))
+        elseif isinf(set.upper) && !isinf(set.lower)
+            MOI.add_constraint(dest, func, MOI.GreaterThan(set.lower))
+        end
+    end
+    return
 end
 
 # Write step: pure file I/O on the independent copy, safe to run off the main thread.
