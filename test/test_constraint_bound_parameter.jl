@@ -236,3 +236,11 @@ end
         console_level = Logging.AboveMaxLevel,
     ) == PSI.ModelBuildStatus.FAILED
 end
+
+@testset "numerical bounds ignore the infinite bounds of a free row" begin
+    bounds = PSI.NumericalBounds()
+    PSI.update_numerical_bounds(bounds, MOI.Interval(-Inf, Inf), ("row", 1))
+    @test bounds.min == Inf && bounds.max == -Inf
+    PSI.update_numerical_bounds(bounds, MOI.Interval(-Inf, 2.0), ("row", 2))
+    @test bounds.min == 2.0 && bounds.max == -Inf
+end
