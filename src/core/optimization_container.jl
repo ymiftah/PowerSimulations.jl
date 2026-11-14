@@ -1276,6 +1276,12 @@ _time_series_parameter_eltype(
     ::Type{<:ConstraintCoefficientParameter},
 ) = Float64
 
+# Bound parameters are applied with `MOI.set` of the constraint set, never as JuMP parameters.
+_time_series_parameter_eltype(
+    ::OptimizationContainer,
+    ::Type{<:ConstraintBoundParameter},
+) = Float64
+
 # Cost parameters are applied as objective coefficients, never as JuMP parameters.
 _time_series_parameter_eltype(
     ::OptimizationContainer,

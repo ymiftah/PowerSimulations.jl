@@ -416,6 +416,10 @@ export FixValueParameter
 export ConstraintCoefficientParameter
 export add_coefficient_target!
 
+# Constraint Bound Parameters
+export ConstraintBoundParameter
+export add_bound_target!
+
 # Time-Series Cost Parameters
 export TimeSeriesCostParameter
 export add_cost_target!
@@ -695,6 +699,7 @@ include("parameters/update_container_parameter_values.jl")
 include("parameters/update_cost_parameters.jl")
 include("parameters/update_parameters.jl")
 include("parameters/coefficient_parameters.jl")
+include("parameters/bound_parameters.jl")
 include("parameters/cost_parameters.jl")
 
 include("devices_models/devices/common/objective_function/common.jl")

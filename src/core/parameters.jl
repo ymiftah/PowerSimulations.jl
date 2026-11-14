@@ -13,6 +13,17 @@ struct CoefficientTarget
     time_step::Int
 end
 
+# Row bounds of `constraint`, set to `(lo, hi)` when `value * multiplier` at `(param_row, time_step)`
+# and `(multiplier_row, time_step)` is nonzero and to `(-Inf, Inf)` otherwise.
+struct BoundTarget
+    constraint::JuMP.ConstraintRef
+    active_lo::Float64
+    active_hi::Float64
+    param_row::Int
+    multiplier_row::Int
+    time_step::Int
+end
+
 # Linear objective term `scale * value * multiplier * variable`, with `value` and `multiplier`
 # read at the linear indices `param_index` and `multiplier_index` of the parent arrays.
 struct CostTarget
@@ -29,6 +40,7 @@ struct TimeSeriesAttributes{T <: PSY.TimeSeriesData} <: ParameterAttributes
     subsystem::Base.RefValue{String}
     coefficient_targets::Vector{CoefficientTarget}
     cost_targets::Vector{CostTarget}
+    bound_targets::Vector{BoundTarget}
 end
 
 function TimeSeriesAttributes(
@@ -44,11 +56,13 @@ function TimeSeriesAttributes(
         Base.RefValue{String}(""),
         CoefficientTarget[],
         CostTarget[],
+        BoundTarget[],
     )
 end
 
 get_coefficient_targets(attr::TimeSeriesAttributes) = attr.coefficient_targets
 get_cost_targets(attr::TimeSeriesAttributes) = attr.cost_targets
+get_bound_targets(attr::TimeSeriesAttributes) = attr.bound_targets
 
 get_time_series_type(::TimeSeriesAttributes{T}) where {T <: PSY.TimeSeriesData} = T
 get_time_series_name(attr::TimeSeriesAttributes) = attr.name
@@ -546,6 +560,18 @@ with [`add_coefficient_target!`](@ref); simulation updates rewrite the registere
 with `JuMP.set_normalized_coefficient`.
 """
 abstract type ConstraintCoefficientParameter <: TimeSeriesParameter end
+
+"""
+Abstract type for time series parameters that switch a constraint row between its bounds and
+a free row (bounds `-Inf` and `Inf`).
+
+Values are stored as `Float64` in every build mode. Formulations register each row with
+[`add_bound_target!`](@ref); the row is active where `value * multiplier` is nonzero.
+Simulation updates reset the row with `MOI.set` of a `MOI.ConstraintSet`, so the constraint
+must be built as a `MOI.Interval` row. Not supported for models built with
+`rebuild_model = true`.
+"""
+abstract type ConstraintBoundParameter <: TimeSeriesParameter end
 
 """
 Time-series parameter whose values are linear objective coefficients; see `add_cost_target!`.
