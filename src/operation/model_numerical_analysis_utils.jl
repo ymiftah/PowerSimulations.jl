@@ -62,7 +62,8 @@ function update_variable_bounds(v::VariableBounds, variable::JuMP.VariableRef, i
 end
 
 function update_numerical_bounds(v::NumericalBounds, value::Real, idx)
-    if !isapprox(value, 0.0)
+    # An infinite row bound (a free row) is not a numerical scale.
+    if isfinite(value) && !isapprox(value, 0.0)
         if v.min > abs(value)
             set_min!(v, value)
             set_min_index!(v, idx)
