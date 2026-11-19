@@ -61,6 +61,25 @@ function _restore_integer_variables!(var_container, cache)
     return
 end
 
+# Clears the primal start values and returns them for `_restore_start_values!`.
+function _clear_start_values!(jump_model)
+    saved = Tuple{JuMP.VariableRef, Float64}[]
+    for v in JuMP.all_variables(jump_model)
+        start = JuMP.start_value(v)
+        isnothing(start) && continue
+        push!(saved, (v, start))
+        JuMP.set_start_value(v, nothing)
+    end
+    return saved
+end
+
+function _restore_start_values!(saved)
+    for (v, start) in saved
+        JuMP.set_start_value(v, start)
+    end
+    return
+end
+
 function process_duals(container::OptimizationContainer, lp_optimizer)
     var_container = get_variables(container)
     for (k, v) in var_container
@@ -73,6 +92,7 @@ function process_duals(container::OptimizationContainer, lp_optimizer)
     var_cache = container.primal_values_cache.variables_cache
     cache = sizehint!(Dict{VariableKey, VarRestoreInfo}(), length(var_container))
     # The loop below modifies integer variables, so restore them on every exit path.
+    saved_starts = Tuple{JuMP.VariableRef, Float64}[]
     try
         for (key, variable) in var_container
             is_integer_flag = false
@@ -121,6 +141,8 @@ function process_duals(container::OptimizationContainer, lp_optimizer)
             @debug("JuMP model set in direct mode during dual calculation")
         end
 
+        # Warm starts make HiGHS skip presolve, which fails on badly scaled objectives.
+        saved_starts = _clear_start_values!(jump_model)
         JuMP.optimize!(jump_model)
 
         model_status = JuMP.primal_status(jump_model)
@@ -140,6 +162,7 @@ function process_duals(container::OptimizationContainer, lp_optimizer)
         end
     finally
         _restore_integer_variables!(var_container, cache)
+        _restore_start_values!(saved_starts)
     end
     return RunStatus.SUCCESSFULLY_FINALIZED
 end

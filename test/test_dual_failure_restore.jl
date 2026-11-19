@@ -59,3 +59,40 @@
     @test JuMP.is_binary(binary)
     @test !JuMP.is_fixed(binary)
 end
+
+# Primal start values are cleared for the dual LP and restored afterwards.
+@testset "Dual LP clears and restores primal start values" begin
+    sys = PSB.build_system(PSITestSystems, "c_sys5_uc")
+    template = ProblemTemplate(
+        NetworkModel(CopperPlatePowerModel; duals = [CopperPlateBalanceConstraint]),
+    )
+    set_device_model!(template, ThermalStandard, ThermalBasicUnitCommitment)
+    set_device_model!(template, PowerLoad, StaticPowerLoad)
+    model = DecisionModel(
+        template,
+        sys;
+        name = "UC",
+        optimizer = HiGHS_optimizer,
+        optimizer_solve_log_print = false,
+    )
+    @test build!(model; output_dir = mktempdir()) == PSI.ModelBuildStatus.BUILT
+    solve!(model)
+    container = PSI.get_optimization_container(model)
+    jm = PSI.get_jump_model(container)
+
+    binaries = [v for v in JuMP.all_variables(jm) if JuMP.is_binary(v)]
+    continuous = first(
+        v for v in JuMP.all_variables(jm) if !JuMP.is_binary(v) && !JuMP.is_integer(v)
+    )
+    for (i, b) in enumerate(binaries[1:min(3, length(binaries))])
+        JuMP.set_start_value(b, isodd(i) ? 1.0 : 0.0)
+    end
+    JuMP.set_start_value(continuous, 0.5)
+    starts_before = Dict(v => JuMP.start_value(v) for v in JuMP.all_variables(jm))
+    # Setting starts drops the previous solution, so re-solve with them before the dual LP.
+    JuMP.optimize!(jm)
+
+    @test PSI.process_duals(container, HiGHS_optimizer) ==
+          PSI.RunStatus.SUCCESSFULLY_FINALIZED
+    @test all(JuMP.start_value(v) == start for (v, start) in starts_before)
+end
