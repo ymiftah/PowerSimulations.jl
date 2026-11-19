@@ -887,8 +887,11 @@ function solve_impl!(container::OptimizationContainer, system::PSY.System)
     # Needs to be called here to avoid issues when getting duals from MILPs
     write_optimizer_stats!(container)
 
-    _, optimizer_stats.timed_calculate_dual_variables =
+    dual_status, optimizer_stats.timed_calculate_dual_variables =
         @timed calculate_dual_variables!(container, system, is_milp(container))
+    if dual_status == RunStatus.FAILED
+        return RunStatus.FAILED
+    end
 
     return RunStatus.SUCCESSFULLY_FINALIZED
 end
@@ -1966,7 +1969,7 @@ function calculate_dual_variables!(
     else
         status = _calculate_dual_variables_continous_model!(container, sys)
     end
-    return
+    return status
 end
 
 ########################### Helper Functions to get keys ###################################
