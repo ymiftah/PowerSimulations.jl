@@ -451,7 +451,7 @@ function _make_system_expressions!(
     else
         ac_bus_numbers = collect(keys(bus_reduction_map))
     end
-    container.expressions = Dict(
+    container.expressions = OrderedDict{ExpressionKey, AbstractArray}(
         ExpressionKey(ActivePowerBalance, PSY.ACBus) =>
             _make_container_array(ac_bus_numbers, time_steps),
         ExpressionKey(ReactivePowerBalance, PSY.ACBus) =>
@@ -473,7 +473,7 @@ function _make_system_expressions!(
     else
         ac_bus_numbers = collect(keys(bus_reduction_map))
     end
-    container.expressions = Dict(
+    container.expressions = OrderedDict{ExpressionKey, AbstractArray}(
         ExpressionKey(ActivePowerBalance, PSY.ACBus) =>
             _make_container_array(ac_bus_numbers, time_steps),
     )
@@ -489,7 +489,7 @@ function _make_system_expressions!(
 )
     time_steps = get_time_steps(container)
     subnetworks_ref_buses = collect(keys(subnetworks))
-    container.expressions = Dict(
+    container.expressions = OrderedDict{ExpressionKey, AbstractArray}(
         ExpressionKey(ActivePowerBalance, PSY.System) =>
             _make_container_array(subnetworks_ref_buses, time_steps),
     )
@@ -510,7 +510,7 @@ function _make_system_expressions!(
         ac_bus_numbers = collect(keys(bus_reduction_map))
     end
     subnetworks = collect(keys(subnetworks))
-    container.expressions = Dict(
+    container.expressions = OrderedDict{ExpressionKey, AbstractArray}(
         ExpressionKey(ActivePowerBalance, PSY.System) =>
             _make_container_array(subnetworks, time_steps),
         ExpressionKey(ActivePowerBalance, PSY.ACBus) =>
@@ -528,7 +528,7 @@ function _make_system_expressions!(
     areas::IS.FlattenIteratorWrapper{PSY.Area},
 )
     time_steps = get_time_steps(container)
-    container.expressions = Dict(
+    container.expressions = OrderedDict{ExpressionKey, AbstractArray}(
         ExpressionKey(ActivePowerBalance, PSY.Area) =>
             _make_container_array(PSY.get_name.(areas), time_steps),
     )
@@ -549,7 +549,7 @@ function _make_system_expressions!(
     else
         ac_bus_numbers = collect(keys(bus_reduction_map))
     end
-    container.expressions = Dict(
+    container.expressions = OrderedDict{ExpressionKey, AbstractArray}(
         # Enforces the balance by Area
         ExpressionKey(ActivePowerBalance, PSY.Area) =>
             _make_container_array(PSY.get_name.(areas), time_steps),
